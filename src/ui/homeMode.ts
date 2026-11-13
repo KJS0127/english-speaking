@@ -174,6 +174,8 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       textArea.value = '';
       hintBox.hidden = true;
       setStatus('');
+      // The bottom bar is sticky at the end of the page, so the page bottom = newest message just above it.
+      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       await say(r.aiLine);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {

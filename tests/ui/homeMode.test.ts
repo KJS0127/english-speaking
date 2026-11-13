@@ -102,6 +102,14 @@ test('turn shows transcript and AI line, speaks it and saves it', async () => {
   expect(await db.getTurns(sessions[0].id)).toHaveLength(1);
 });
 
+test('after a reply the page scrolls to the very bottom (above the bottom bar)', async () => {
+  const spy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  await renderHomeMode(root(), deps, scenario);
+  await talk();
+  expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ top: document.documentElement.scrollHeight }));
+  spy.mockRestore();
+});
+
 test('during conversation corrections show only a small marker', async () => {
   send.mockResolvedValue(res({ correction: { original: 'I want coffee', better: "I'd like a coffee", why: '공손' } }));
   await renderHomeMode(root(), deps, scenario);
