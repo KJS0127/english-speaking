@@ -35,12 +35,13 @@ export interface LoopState {
   achieved: number[];
   userTurns: number;
   corrections: number;
+  introduced: boolean; // goals + opening line were fully spoken
 }
 
 export function createLoopState(scenario: Scenario, rate: number): LoopState {
   return {
     scenario, rate, mission: null, sessionId: null, history: [],
-    last: { aiLine: '', aiLineKo: '', suggestedReply: '' }, idx: 0, achieved: [], userTurns: 0, corrections: 0,
+    last: { aiLine: '', aiLineKo: '', suggestedReply: '' }, idx: 0, achieved: [], userTurns: 0, corrections: 0, introduced: false,
   };
 }
 
@@ -72,6 +73,8 @@ async function closeMission(
   st.mission = null;
   st.sessionId = null;
   if (!mission || !sessionId) return null;
+  // all goals done counts as achieved even if we were interrupted before congratulating
+  achieved = achieved || st.achieved.length >= mission.goals.length;
   let change: LevelChange = null;
   if (achieved) await deps.db.updateSession(sessionId, { achieved: true });
   if (evaluateIt) {
@@ -123,12 +126,18 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
       missionTitle: mission.titleKo, goals: mission.goals, difficulty: mission.difficulty,
     });
     Object.assign(st, {
-      mission, sessionId, idx: 0, achieved: [], userTurns: 0, corrections: 0,
+      mission, sessionId, idx: 0, achieved: [], userTurns: 0, corrections: 0, introduced: false,
       history: [{ role: 'ai', text: mission.openingLine }],
       last: { aiLine: mission.openingLine, aiLineKo: '', suggestedReply: '' },
     });
-    await ko(`${KO.goalIntro} ${numbered(mission.goals, mission.goals.map((_, i) => i + 1))}`);
-    await en(mission.openingLine);
+    await introduce();
+  };
+  /** Speaks the goals (Korean) and the opening line; replayed on resume if it was interrupted. */
+  const introduce = async () => {
+    const m = st.mission!;
+    await ko(`${KO.goalIntro} ${numbered(m.goals, m.goals.map((_, i) => i + 1))}`);
+    await en(m.openingLine);
+    st.introduced = true;
   };
   /** Closes the current mission (evaluated) and announces any level change. */
   const finishAndAnnounce = async (achieved: boolean) => {
@@ -173,7 +182,14 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
     for (;;) {
       check();
       if (!st.mission) await beginMission();
+      else if (!st.introduced) await introduce();
       const mission = st.mission!;
+      if (st.achieved.length >= mission.goals.length) {
+        // resumed after the last goal was reached but before we congratulated
+        await ko(KO.goalAll);
+        await finishAndAnnounce(true);
+        continue;
+      }
       const heard = await deps.listen({ signal, idleMs: idleSpoken ? 0 : CONFIG.idlePromptMs });
       check();
       if (heard === 'idle') {

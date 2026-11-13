@@ -435,3 +435,50 @@ test('listen rejected with AbortError (audio interrupted) pauses even without si
   expect(await t.run()).toBe('paused');
   expect(t.ended).toEqual([]);
 });
+
+describe('review fixes', () => {
+  test('pause right after the last goal still counts the mission as achieved on resume', async () => {
+    const state = createLoopState(scenario, CONFIG.ttsRate.normal);
+    const a = setup([res({ goalsDone: [1, 2] })]);
+    const origSpeak = a.deps.speak;
+    a.deps.speak = async (text, o) => {
+      if (text === 'Great, your name please?') {
+        a.ctrl.abort();
+      }
+      return origSpeak(text, o);
+    };
+    expect(await runCarLoop(a.deps, { scenario, weakPhrases: [], state }, a.ctrl.signal)).toBe('paused');
+    const b = setup([], { utterances: 0 });
+    await runCarLoop(b.deps, { scenario, weakPhrases: [], state }, b.ctrl.signal);
+    expect(b.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 1, corrections: 0 } }]);
+    expect(texts(b.spoken)).toContain(KO.goalAll);
+  });
+
+  test('quit after the last goal (paused before congratulating) evaluates as achieved', async () => {
+    const state = createLoopState(scenario, CONFIG.ttsRate.normal);
+    const a = setup([res({ goalsDone: [1, 2] })]);
+    const origSpeak = a.deps.speak;
+    a.deps.speak = async (text, o) => {
+      if (text === 'Great, your name please?') a.ctrl.abort();
+      return origSpeak(text, o);
+    };
+    await runCarLoop(a.deps, { scenario, weakPhrases: [], state }, a.ctrl.signal);
+    await closeMissionForQuit(a.deps, state);
+    expect(a.finished[0].o.achieved).toBe(true);
+    expect(a.updates).toContainEqual({ sid: a.sessions[0].id, achieved: true });
+  });
+
+  test('pause during the goal intro replays the goals and opening line on resume', async () => {
+    const state = createLoopState(scenario, CONFIG.ttsRate.normal);
+    const a = setup([]);
+    a.deps.speak = async (text) => {
+      if (text.startsWith(KO.goalIntro)) a.ctrl.abort();
+    };
+    expect(await runCarLoop(a.deps, { scenario, weakPhrases: [], state }, a.ctrl.signal)).toBe('paused');
+    const b = setup([], { utterances: 0 });
+    await runCarLoop(b.deps, { scenario, weakPhrases: [], state }, b.ctrl.signal);
+    expect(b.all[0].text.startsWith(KO.goalIntro)).toBe(true);
+    expect(b.all[1].text).toBe(scenario.openingLine);
+    expect(b.missionsStarted).toEqual([]);
+  });
+});

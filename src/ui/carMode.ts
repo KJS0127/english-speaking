@@ -165,11 +165,11 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
     running = false;
     ctrl = null;
     await releaseLock();
-    if (quitting) {
+    if (quitting || left) {
       mic?.close();
       mic = null;
-      await closeMissionForQuit({ finishMission: deps.finishMission, db: deps.db, now: () => Date.now() }, state).catch(() => {});
-      navigate({ name: 'home' });
+      await closeMissionNow();
+      if (quitting && !left) navigate({ name: 'home' });
       return;
     }
     if (end === 'paused') {
@@ -181,6 +181,8 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
     }
   }
 
+  const closeMissionNow = () =>
+    closeMissionForQuit({ finishMission: deps.finishMission, db: deps.db, now: () => Date.now() }, state).catch(() => null);
   const pause = () => {
     ctrl?.abort();
     deps.stopSpeaking?.();
@@ -197,6 +199,8 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
   };
   const onLeave = () => {
     left = true;
+    // paused (not running): close and evaluate now; running: start() closes it once the loop stops
+    if (!running) void closeMissionNow();
     pause();
     mic?.close();
     mic = null;

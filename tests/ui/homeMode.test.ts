@@ -281,3 +281,32 @@ describe('missions', () => {
     expect(deps.startMission).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('review fixes', () => {
+  test('ending after a quota error does not evaluate difficulty', async () => {
+    send.mockResolvedValueOnce(res()).mockResolvedValueOnce(res()).mockRejectedValueOnce(new QuotaError('x'));
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    await talk();
+    await talk();
+    byText('대화 끝내기').click();
+    await flush();
+    expect(deps.finishMission).not.toHaveBeenCalled();
+    expect((await db.listSessions())[0].endedAt).not.toBeNull();
+  });
+
+  test('leaving while the final reply is spoken still counts as achieved', async () => {
+    let finishSpeak!: () => void;
+    deps.speak = vi.fn((text: string) => (text === 'What size?' ? new Promise<void>((r) => (finishSpeak = r)) : Promise.resolve()));
+    send.mockResolvedValue(res({ goalsDone: [1, 2] }));
+    await renderHomeMode(root(), deps, scenario);
+    q<HTMLButtonElement>('button.mic').click();
+    await flush();
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+    finishSpeak();
+    await flush();
+    expect(deps.finishMission).toHaveBeenCalledTimes(1);
+    expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: true, userTurns: 1, corrections: 0 });
+  });
+});

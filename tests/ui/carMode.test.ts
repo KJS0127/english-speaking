@@ -207,3 +207,17 @@ test('mic permission failure shows message', async () => {
   await flush();
   expect(root().textContent).toContain('마이크를 사용할 수 없어요');
 });
+
+test('leaving the paused car screen closes and evaluates the mission', async () => {
+  await renderCarMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  setVisibility('hidden');
+  await flush();
+  setVisibility('visible');
+  await flush();
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  await flush();
+  expect(deps.finishMission).toHaveBeenCalledTimes(1);
+  expect((await db.listSessions())[0].endedAt).not.toBeNull();
+});

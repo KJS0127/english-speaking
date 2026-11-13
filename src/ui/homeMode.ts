@@ -121,10 +121,14 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
     mic = null;
     if (closed) return null;
     closed = true;
+    // all goals done counts as achieved even if the user left before the summary
+    isAchieved = isAchieved || (!!mission && achieved.length >= mission.goals.length);
     if (started) {
       if (isAchieved) await deps.db.updateSession(sessionId, { achieved: true });
       await deps.db.endSession(sessionId, Date.now());
     }
+    // a usage-limit stop is not the learner's failure (spec 5.5)
+    if (blocked) return null;
     return deps.finishMission(scenario.id, { achieved: isAchieved, userTurns, corrections });
   };
   window.addEventListener('hashchange', () => void close(false), { once: true });
@@ -235,6 +239,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       // The bottom bar is sticky at the end of the page, so the page bottom = newest message just above it.
       window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       await say(r.aiLine);
+      if (closed) return; // user left while the reply was spoken
       if (achieved.length >= ms.goals.length) await finish(true);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
