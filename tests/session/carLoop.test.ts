@@ -1,4 +1,7 @@
-import { runCarLoop, createLoopState, type LoopDeps } from '../../src/session/carLoop';
+import { runCarLoop, createLoopState, closeMissionForQuit, type LoopDeps } from '../../src/session/carLoop';
+import type { Mission } from '../../src/missions';
+import type { Scenario } from '../../src/scenarios';
+import type { LevelChange, Outcome } from '../../src/session/difficulty';
 import { KO, EN_RETRY } from '../../src/session/phrases';
 import { SCENARIOS, nextScenario } from '../../src/scenarios';
 import { CONFIG } from '../../src/config';
@@ -14,9 +17,19 @@ const res = (over: Partial<TurnResult> = {}): TurnResult => ({
 
 type Step = TurnResult | Error;
 
-function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number } = {}) {
+const missionFor = (s: Scenario, goals = ['목표 하나', '목표 둘']): Mission => ({
+  titleKo: `미션 ${s.id}`, goals, situationEn: 'twist', openingLine: s.openingLine, difficulty: 2, source: 'ai',
+});
+
+function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number; goals?: string[]; change?: LevelChange } = {}) {
   const ctrl = new AbortController();
+  const all: { text: string; lang: string; rate: number }[] = [];
+  // `spoken` leaves out the mission-intro announcement so older tests keep their indexes
   const spoken: { text: string; lang: string; rate: number }[] = [];
+  const sessions: any[] = [];
+  const updates: any[] = [];
+  const finished: { scenarioId: string; o: Outcome }[] = [];
+  const missionsStarted: Scenario[] = [];
   const sent: TurnRequest[] = [];
   const turns: any[] = [];
   const ended: string[] = [];
@@ -47,7 +60,17 @@ function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number } 
       return next;
     },
     async speak(text, o) {
-      spoken.push({ text, lang: o.lang, rate: o.rate });
+      const item = { text, lang: o.lang, rate: o.rate };
+      all.push(item);
+      if (!text.startsWith(KO.goalIntro)) spoken.push(item);
+    },
+    async startMission(s) {
+      missionsStarted.push(s);
+      return missionFor(s, opts.goals);
+    },
+    async finishMission(scenarioId, o) {
+      finished.push({ scenarioId, o });
+      return opts.change ?? null;
     },
     db: {
       async addTurn(t) {
@@ -56,6 +79,12 @@ function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number } 
       async endSession(sid) {
         ended.push(sid);
       },
+      async startSession(s) {
+        sessions.push(s);
+      },
+      async updateSession(sid, patch) {
+        updates.push({ sid, ...patch });
+      },
     },
     now: () => 1000,
     sleep: async (ms) => {
@@ -63,8 +92,8 @@ function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number } 
     },
     newId: () => `id${id++}`,
   };
-  const run = () => runCarLoop(deps, { sessionId: 'S', scenario, weakPhrases: [{ original: 'a', better: 'b' }] }, ctrl.signal);
-  return { run, spoken, sent, turns, ended, sleeps, ctrl, listenIdleMs, deps };
+  const run = () => runCarLoop(deps, { scenario, weakPhrases: [{ original: 'a', better: 'b' }] }, ctrl.signal);
+  return { run, spoken, all, sent, turns, ended, sleeps, ctrl, listenIdleMs, deps, sessions, updates, finished, missionsStarted };
 }
 
 const texts = (s: { text: string }[]) => s.map((x) => x.text);
@@ -85,7 +114,7 @@ test('normal turn: sends once, speaks aiLine, saves turn without audio', async (
   expect(texts(t.spoken)).toEqual([scenario.openingLine, 'Great, your name please?']);
   expect(t.turns).toHaveLength(1);
   expect(t.turns[0]).toEqual({
-    id: 'id0', sessionId: 'S', idx: 0, at: 1000, transcript: 'I have a reservation', aiLine: 'Great, your name please?',
+    id: 'id1', sessionId: 'id0', idx: 0, at: 1000, transcript: 'I have a reservation', aiLine: 'Great, your name please?',
     correction: { original: 'x', better: 'y', why: 'z' }, pronunciation: null,
   });
 });
@@ -130,21 +159,122 @@ test('hint speaks KO.hintIntro then suggestedReply', async () => {
   expect(t.spoken[3]).toMatchObject({ text: 'My name is Kim.', lang: 'en-US' });
 });
 
-test('next speaks KO.next then next scenario opening, and resets history', async () => {
-  const t = setup([res(), res({ command: 'next', aiLine: 'OK' }), res({ aiLine: 'Hello again' })]);
+test('otherScenario moves to the next scenario with a new mission and resets history', async () => {
+  const t = setup([res(), res({ command: 'otherScenario', aiLine: 'OK' }), res({ aiLine: 'Hello again' })]);
   await t.run();
   const nxt = nextScenario(scenario);
-  expect(t.spoken[2]).toMatchObject({ text: KO.next, lang: 'ko-KR' });
+  expect(t.spoken[2]).toMatchObject({ text: KO.otherScenario, lang: 'ko-KR' });
   expect(t.spoken[3]).toMatchObject({ text: nxt.openingLine, lang: 'en-US' });
   expect(t.sent[2].scenario).toBe(nxt);
   expect(t.sent[2].history).toEqual([{ role: 'ai', text: nxt.openingLine }]);
+  expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: false, userTurns: 1, corrections: 0 } }]);
+  expect(t.sessions.map((s) => s.scenarioId)).toEqual([scenario.id, nxt.id]);
+});
+
+test('speaks the goals in Korean before the opening line and starts a session with mission fields', async () => {
+  const t = setup([]);
+  await t.run();
+  expect(t.all[0].lang).toBe('ko-KR');
+  expect(t.all[0].text).toBe(`${KO.goalIntro} 1번, 목표 하나. 2번, 목표 둘.`);
+  expect(t.all[1].text).toBe(scenario.openingLine);
+  expect(t.sessions[0]).toMatchObject({
+    scenarioId: scenario.id, mode: 'car', missionTitle: `미션 ${scenario.id}`, goals: ['목표 하나', '목표 둘'], difficulty: 2,
+  });
+});
+
+test('sends the mission and achieved goals with each turn', async () => {
+  const t = setup([res({ goalsDone: [1] }), res()]);
+  await t.run();
+  expect(t.sent[0].mission!.titleKo).toBe(`미션 ${scenario.id}`);
+  expect(t.sent[0].achieved).toEqual([]);
+  expect(t.sent[1].achieved).toEqual([1]);
+});
+
+test('goal progress announces one achieved goal after the AI line', async () => {
+  const t = setup([res({ goalsDone: [2] })]);
+  await t.run();
+  expect(texts(t.spoken).slice(-2)).toEqual(['Great, your name please?', KO.goalOne]);
+});
+
+test('duplicate or out-of-range goal numbers count once', async () => {
+  const t = setup([res({ goalsDone: [1, 7] }), res({ goalsDone: [1] })]);
+  await t.run();
+  expect(texts(t.spoken).filter((x) => x === KO.goalOne)).toHaveLength(1);
+  expect(t.finished).toEqual([]);
+});
+
+test('all goals: congratulate, evaluate as achieved, end session, start a new mission in the same scenario', async () => {
+  const t = setup([res({ goalsDone: [1] }), res({ goalsDone: [2], correction: { original: 'a', better: 'b', why: '' } })], {
+    change: 'up',
+  });
+  await t.run();
+  expect(texts(t.spoken)).toContain(KO.goalAll);
+  expect(texts(t.spoken)).toContain(KO.levelUp(3));
+  expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 2, corrections: 1 } }]);
+  expect(t.updates).toContainEqual({ sid: t.sessions[0].id, achieved: true });
+  expect(t.ended).toContain(t.sessions[0].id);
+  expect(t.missionsStarted).toEqual([scenario, scenario]);
+  expect(t.sessions).toHaveLength(2);
+  expect(t.all.filter((x) => x.text.startsWith(KO.goalIntro))).toHaveLength(2);
+});
+
+test('level down is announced', async () => {
+  const t = setup([res(), res({ command: 'next', aiLine: 'OK' })], { change: 'down' });
+  await t.run();
+  expect(texts(t.spoken)).toContain(KO.levelDown(1));
+});
+
+test('goal command reads the remaining goals in Korean without saving a turn', async () => {
+  const t = setup([res({ goalsDone: [1] }), res({ command: 'goal', aiLine: 'OK' })]);
+  await t.run();
+  expect(t.spoken.at(-1)).toMatchObject({ text: `${KO.goalsLeft} 2번, 목표 둘.`, lang: 'ko-KR' });
+  expect(t.turns).toHaveLength(1);
+});
+
+test('next abandons the mission (evaluated as not achieved) and starts a new mission in the same scenario', async () => {
+  const t = setup([res(), res({ transcript: 'x', aiLine: 'y' }), res({ command: 'next', aiLine: 'OK' })]);
+  await t.run();
+  expect(t.spoken.find((x) => x.text === KO.newMission)).toBeDefined();
+  expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: false, userTurns: 2, corrections: 0 } }]);
+  expect(t.missionsStarted).toEqual([scenario, scenario]);
+  expect(t.ended).toContain(t.sessions[0].id);
+});
+
+test('command and empty turns are not counted as user turns', async () => {
+  const t = setup([res(), res({ command: 'repeat', aiLine: 'OK' }), res({ transcript: ' ' }), res({ command: 'stop', aiLine: 'OK' })]);
+  await t.run();
+  expect(t.finished[0].o.userTurns).toBe(1);
+});
+
+test('stop evaluates the mission', async () => {
+  const t = setup([res(), res({ command: 'stop', aiLine: 'OK' })]);
+  expect(await t.run()).toBe('stopped');
+  expect(t.finished).toHaveLength(1);
+});
+
+test('quota during a turn does not evaluate the mission', async () => {
+  const t = setup([res(), new QuotaError('x')]);
+  expect(await t.run()).toBe('quota');
+  expect(t.finished).toEqual([]);
+  expect(t.ended).toEqual([t.sessions[0].id]);
+});
+
+test('closeMissionForQuit evaluates and ends the current mission session', async () => {
+  const t = setup([res(), res({ transcript: 'x', aiLine: 'y' })]);
+  const state = createLoopState(scenario, CONFIG.ttsRate.normal);
+  await runCarLoop(t.deps, { scenario, weakPhrases: [], state }, t.ctrl.signal);
+  await closeMissionForQuit(t.deps, state);
+  expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: false, userTurns: 2, corrections: 0 } }]);
+  expect(t.ended).toEqual([t.sessions[0].id]);
+  await closeMissionForQuit(t.deps, state); // second call is a no-op
+  expect(t.finished).toHaveLength(1);
 });
 
 test('stop speaks KO.stop, ends session, returns stopped', async () => {
   const t = setup([res({ command: 'stop', aiLine: 'OK' })]);
   expect(await t.run()).toBe('stopped');
   expect(t.spoken.at(-1)).toMatchObject({ text: KO.stop, lang: 'ko-KR' });
-  expect(t.ended).toEqual(['S']);
+  expect(t.ended).toEqual([t.sessions[0].id]);
 });
 
 test('empty transcript is ignored', async () => {
@@ -170,7 +300,7 @@ test('model gone (FatalApiError) ends loop with spoken notice', async () => {
   const t = setup([new FatalApiError('404')]);
   expect(await t.run()).toBe('error');
   expect(t.spoken.at(-1)).toMatchObject({ text: KO.fatal, lang: 'ko-KR' });
-  expect(t.ended).toEqual(['S']);
+  expect(t.ended).toEqual([t.sessions[0].id]);
 });
 
 test('repeated bad responses end the loop instead of apologising forever', async () => {
@@ -213,22 +343,24 @@ test('send receives the loop abort signal', async () => {
 
 test('uses the configured voice rate', async () => {
   const t = setup([]);
-  await runCarLoop(t.deps, { sessionId: 'S', scenario, weakPhrases: [], rate: 0.8 }, t.ctrl.signal);
+  await runCarLoop(t.deps, { scenario, weakPhrases: [], rate: 0.8 }, t.ctrl.signal);
   expect(t.spoken[0].rate).toBe(0.8);
 });
 
 test('resuming with the same state continues instead of restarting', async () => {
   const state = createLoopState(scenario, CONFIG.ttsRate.normal);
-  const a = setup([res(), res({ command: 'next', aiLine: 'OK' })]);
-  await runCarLoop(a.deps, { sessionId: 'S', scenario, weakPhrases: [], state }, a.ctrl.signal);
+  const a = setup([res(), res({ command: 'otherScenario', aiLine: 'OK' })]);
+  await runCarLoop(a.deps, { scenario, weakPhrases: [], state }, a.ctrl.signal);
   const b = setup([res({ transcript: 'Hi', aiLine: 'Hello' })]);
-  await runCarLoop(b.deps, { sessionId: 'S', scenario, weakPhrases: [], state }, b.ctrl.signal);
+  await runCarLoop(b.deps, { scenario, weakPhrases: [], state }, b.ctrl.signal);
   const nxt = nextScenario(scenario);
-  // no opening line again; same (next) scenario; history kept; idx continues
-  expect(texts(b.spoken)).toEqual(['Hello']);
+  // no mission intro or opening line again; same (next) scenario; history kept; idx continues
+  expect(texts(b.all)).toEqual(['Hello']);
+  expect(b.missionsStarted).toEqual([]);
   expect(b.sent[0].scenario).toBe(nxt);
   expect(b.sent[0].history).toEqual([{ role: 'ai', text: nxt.openingLine }]);
-  expect(b.turns[0].idx).toBe(1);
+  expect(b.turns[0].idx).toBe(0);
+  expect(b.turns[0].sessionId).toBe(a.sessions[1].id);
 });
 
 test('bad response asks to repeat', async () => {
@@ -260,14 +392,14 @@ test('quota error ends loop', async () => {
   const t = setup([new QuotaError('x')]);
   expect(await t.run()).toBe('quota');
   expect(t.spoken.at(-1)).toMatchObject({ text: KO.quota, lang: 'ko-KR' });
-  expect(t.ended).toEqual(['S']);
+  expect(t.ended).toEqual([t.sessions[0].id]);
 });
 
 test('auth error ends loop', async () => {
   const t = setup([new AuthError('x')]);
   expect(await t.run()).toBe('auth');
   expect(t.spoken.at(-1)).toMatchObject({ text: KO.auth, lang: 'ko-KR' });
-  expect(t.ended).toEqual(['S']);
+  expect(t.ended).toEqual([t.sessions[0].id]);
 });
 
 test('abort returns paused without ending session', async () => {
@@ -292,7 +424,7 @@ test('unexpected error ends loop with spoken error notice', async () => {
   const t = setup([new Error('boom')]);
   expect(await t.run()).toBe('error');
   expect(t.spoken.at(-1)).toMatchObject({ text: KO.error });
-  expect(t.ended).toEqual(['S']);
+  expect(t.ended).toEqual([t.sessions[0].id]);
 });
 
 test('listen rejected with AbortError (audio interrupted) pauses even without signal abort', async () => {

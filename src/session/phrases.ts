@@ -10,6 +10,14 @@ export const KO = {
   error: '문제가 생겨서 연습을 마칠게요.',
   fatal: '앱 설정에 문제가 있어서 연습을 마칠게요. 집에서 확인해 주세요.',
   badRepeated: '계속 잘 알아듣지 못해서 연습을 마칠게요.',
+  goalIntro: '이번 목표예요.',
+  goalsLeft: '남은 목표예요.',
+  goalOne: '목표 하나 달성!',
+  goalAll: '목표 달성!',
+  newMission: '새 목표로 넘어갈게요.',
+  otherScenario: '다른 상황으로 넘어갈게요.',
+  levelUp: (n: number) => `${n}단계로 올라갔어요!`,
+  levelDown: (n: number) => `${n}단계로 낮췄어요. 천천히 다시 해 봐요.`,
 } as const;
 
 export const EN_RETRY = 'Sorry, could you say that again?';

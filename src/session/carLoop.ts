@@ -4,8 +4,10 @@ import type { SpeakOpts } from '../audio/speaker';
 import { AuthError, BadResponseError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../ai/errors';
 import type { HistoryItem, TurnRequest } from '../ai/prompt';
 import type { TurnResult } from '../ai/schema';
+import type { Mission } from '../missions';
 import { nextScenario, type Scenario } from '../scenarios';
 import type { Db } from '../store/db';
+import { MAX_LEVEL, MIN_LEVEL, type LevelChange, type Outcome } from './difficulty';
 import { EN_RETRY, KO } from './phrases';
 
 export interface LoopDeps {
@@ -13,28 +15,36 @@ export interface LoopDeps {
   listen(opts: { signal: AbortSignal; idleMs: number }): Promise<Float32Array | 'idle'>;
   send(req: TurnRequest, signal: AbortSignal): Promise<TurnResult>;
   speak(text: string, opts: SpeakOpts): Promise<void>;
-  db: Pick<Db, 'addTurn' | 'endSession'>;
+  startMission(scenario: Scenario, signal: AbortSignal): Promise<Mission>;
+  finishMission(scenarioId: string, o: Outcome): Promise<LevelChange>;
+  db: Pick<Db, 'addTurn' | 'endSession' | 'startSession' | 'updateSession'>;
   now(): number;
   sleep(ms: number): Promise<void>;
   newId(): string;
 }
 
-/** Conversation state kept across pause/resume of the same session. */
+/** Conversation state kept across pause/resume. One mission = one saved session. */
 export interface LoopState {
   scenario: Scenario;
+  rate: number;
+  mission: Mission | null;
+  sessionId: string | null;
   history: HistoryItem[];
   last: { aiLine: string; aiLineKo: string; suggestedReply: string };
   idx: number;
-  rate: number;
-  opened: boolean;
+  achieved: number[];
+  userTurns: number;
+  corrections: number;
 }
 
 export function createLoopState(scenario: Scenario, rate: number): LoopState {
-  return { scenario, history: [], last: { aiLine: '', aiLineKo: '', suggestedReply: '' }, idx: 0, rate, opened: false };
+  return {
+    scenario, rate, mission: null, sessionId: null, history: [],
+    last: { aiLine: '', aiLineKo: '', suggestedReply: '' }, idx: 0, achieved: [], userTurns: 0, corrections: 0,
+  };
 }
 
 export interface LoopCtx {
-  sessionId: string;
   scenario: Scenario;
   weakPhrases: { original: string; better: string }[];
   rate?: number;
@@ -45,6 +55,36 @@ export type LoopEnd = 'stopped' | 'quota' | 'auth' | 'error' | 'paused';
 
 class Paused extends Error {}
 class TooManyBad extends Error {}
+
+const numbered = (goals: string[], which: number[]) => which.map((n) => `${n}번, ${goals[n - 1]}.`).join(' ');
+
+/**
+ * Ends the current mission's session. When `evaluate` is true the difficulty rules run.
+ * Safe to call when no mission is active.
+ */
+async function closeMission(
+  deps: Pick<LoopDeps, 'finishMission' | 'db' | 'now'>,
+  st: LoopState,
+  evaluateIt: boolean,
+  achieved: boolean,
+): Promise<LevelChange> {
+  const { mission, sessionId } = st;
+  st.mission = null;
+  st.sessionId = null;
+  if (!mission || !sessionId) return null;
+  let change: LevelChange = null;
+  if (achieved) await deps.db.updateSession(sessionId, { achieved: true });
+  if (evaluateIt) {
+    change = await deps.finishMission(st.scenario.id, { achieved, userTurns: st.userTurns, corrections: st.corrections });
+  }
+  await deps.db.endSession(sessionId, deps.now());
+  return change;
+}
+
+/** Used by the car screen's quit button: evaluates and closes the mission in progress. */
+export async function closeMissionForQuit(deps: Pick<LoopDeps, 'finishMission' | 'db' | 'now'>, st: LoopState): Promise<LevelChange> {
+  return closeMission(deps, st, true, false);
+}
 
 export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSignal): Promise<LoopEnd> {
   const st = ctx.state ?? createLoopState(ctx.scenario, ctx.rate ?? CONFIG.ttsRate.normal);
@@ -61,19 +101,40 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
     check();
     await deps.speak(text, { lang: 'ko-KR', rate: CONFIG.ttsRate.normal });
   };
+  /** Ends the loop: abnormal endings close the session without evaluating difficulty. */
   const end = async (reason: Exclude<LoopEnd, 'paused'>, phrase: string): Promise<LoopEnd> => {
     try {
       await deps.speak(phrase, { lang: 'ko-KR', rate: CONFIG.ttsRate.normal });
     } finally {
-      await deps.db.endSession(ctx.sessionId, deps.now());
+      await closeMission(deps, st, false, false);
     }
     return reason;
   };
-  const open = async () => {
-    st.history = [{ role: 'ai', text: st.scenario.openingLine }];
-    st.last = { aiLine: st.scenario.openingLine, aiLineKo: '', suggestedReply: '' };
-    st.opened = true;
-    await en(st.scenario.openingLine);
+  const announce = async (change: LevelChange, from: number) => {
+    if (change === 'up') await ko(KO.levelUp(Math.min(MAX_LEVEL, from + 1)));
+    if (change === 'down') await ko(KO.levelDown(Math.max(MIN_LEVEL, from - 1)));
+  };
+  const beginMission = async () => {
+    const mission = await deps.startMission(st.scenario, signal);
+    check();
+    const sessionId = deps.newId();
+    await deps.db.startSession({
+      id: sessionId, scenarioId: st.scenario.id, mode: 'car', startedAt: deps.now(),
+      missionTitle: mission.titleKo, goals: mission.goals, difficulty: mission.difficulty,
+    });
+    Object.assign(st, {
+      mission, sessionId, idx: 0, achieved: [], userTurns: 0, corrections: 0,
+      history: [{ role: 'ai', text: mission.openingLine }],
+      last: { aiLine: mission.openingLine, aiLineKo: '', suggestedReply: '' },
+    });
+    await ko(`${KO.goalIntro} ${numbered(mission.goals, mission.goals.map((_, i) => i + 1))}`);
+    await en(mission.openingLine);
+  };
+  /** Closes the current mission (evaluated) and announces any level change. */
+  const finishAndAnnounce = async (achieved: boolean) => {
+    const from = st.mission?.difficulty ?? 1;
+    const change = await closeMission(deps, st, true, achieved);
+    await announce(change, from);
   };
 
   // Sends one utterance; retries network errors (announced once) and rate limits (silently, capped).
@@ -108,10 +169,11 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
   };
 
   try {
-    if (!st.opened) await open();
     let idleSpoken = false;
     for (;;) {
       check();
+      if (!st.mission) await beginMission();
+      const mission = st.mission!;
       const heard = await deps.listen({ signal, idleMs: idleSpoken ? 0 : CONFIG.idlePromptMs });
       check();
       if (heard === 'idle') {
@@ -128,6 +190,8 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
         history: st.history.slice(),
         weakPhrases: ctx.weakPhrases,
         audioWav: encodeWav(heard, CONFIG.sampleRate),
+        mission,
+        achieved: st.achieved.slice(),
       };
 
       let r: TurnResult;
@@ -164,22 +228,35 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
             await en(st.last.aiLine);
           }
           continue;
+        case 'goal': {
+          const left = mission.goals.map((_, i) => i + 1).filter((n) => !st.achieved.includes(n));
+          await ko(`${KO.goalsLeft} ${numbered(mission.goals, left)}`);
+          continue;
+        }
         case 'next':
-          await ko(KO.next);
+          await ko(KO.newMission);
+          await finishAndAnnounce(false);
+          continue; // a new mission starts at the top of the loop
+        case 'otherScenario':
+          await ko(KO.otherScenario);
+          await finishAndAnnounce(false);
           st.scenario = nextScenario(st.scenario);
-          await open();
           continue;
         case 'stop':
-          return await end('stopped', KO.stop);
+          await finishAndAnnounce(false);
+          await ko(KO.stop);
+          return 'stopped';
       }
 
       if (!r.transcript.trim()) continue;
       idleSpoken = false;
+      st.userTurns++;
+      if (r.correction) st.corrections++;
       st.history.push({ role: 'user', text: r.transcript }, { role: 'ai', text: r.aiLine });
       st.last = { aiLine: r.aiLine, aiLineKo: r.aiLineKo, suggestedReply: r.suggestedReply };
       await deps.db.addTurn({
         id: deps.newId(),
-        sessionId: ctx.sessionId,
+        sessionId: st.sessionId!,
         idx: st.idx++,
         at: deps.now(),
         transcript: r.transcript,
@@ -187,7 +264,15 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
         correction: r.correction,
         pronunciation: r.pronunciation,
       });
+      const fresh = r.goalsDone.filter((n) => n <= mission.goals.length && !st.achieved.includes(n));
+      st.achieved.push(...fresh);
       await en(r.aiLine);
+      if (st.achieved.length >= mission.goals.length) {
+        await ko(KO.goalAll);
+        await finishAndAnnounce(true);
+      } else if (fresh.length) {
+        await ko(KO.goalOne);
+      }
     }
   } catch (e) {
     if (e instanceof Paused || (e instanceof DOMException && e.name === 'AbortError') || signal.aborted) return 'paused';
