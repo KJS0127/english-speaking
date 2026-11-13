@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { FALLBACK_MISSIONS, fallbackMission, goalCountRange } from '../../src/missions';
+import { FALLBACK_MISSIONS, fallbackMission, goalCountRange, minExchanges } from '../../src/missions';
 import { evaluate } from '../../src/session/difficulty';
 import { startMission, finishMission, type RunnerDeps } from '../../src/session/missionRunner';
 import { SCENARIOS } from '../../src/scenarios';
@@ -105,4 +105,8 @@ describe('mission runner', () => {
     expect(await finishMission(d, scenario.id, { achieved: true, userTurns: 2, corrections: 0 })).toBe('up');
     expect((await d.db.getProgress(scenario.id)).level).toBe(2);
   });
+});
+
+test('minimum exchanges per difficulty', () => {
+  expect([1, 2, 3, 4, 5].map(minExchanges)).toEqual([3, 4, 5, 6, 7]);
 });

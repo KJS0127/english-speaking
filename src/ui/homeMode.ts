@@ -5,7 +5,7 @@ import { encodeWav } from '../audio/wav';
 import { AuthError, BadResponseError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../ai/errors';
 import type { HistoryItem, TurnRequest } from '../ai/prompt';
 import type { TurnResult } from '../ai/schema';
-import type { Mission } from '../missions';
+import { minExchanges, type Mission } from '../missions';
 import { nextScenario, type Scenario } from '../scenarios';
 import { MAX_LEVEL, MIN_LEVEL, type LevelChange, type Outcome } from '../session/difficulty';
 import { KO } from '../session/phrases';
@@ -196,7 +196,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
           scenario, mode: 'home', level: method, history: history.slice(),
           weakPhrases: (await deps.db.topWeakPhrases(5)).map((w) => ({ original: w.original, better: w.better })),
           audioWav: encodeWav(audio, CONFIG.sampleRate), typedText: typed,
-          mission: ms, achieved: achieved.slice(),
+          mission: ms, achieved: achieved.slice(), exchanges: userTurns,
         },
         apiKey,
       );
@@ -235,12 +235,14 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       );
       textArea.value = '';
       hintBox.hidden = true;
-      setStatus(fresh.length && achieved.length < ms.goals.length ? KO.goalOne : '');
+      const allGoals = achieved.length >= ms.goals.length;
+      const complete = allGoals && userTurns >= minExchanges(ms.difficulty);
+      setStatus(fresh.length && !complete ? (allGoals ? KO.goalsDoneKeepTalking : KO.goalOne) : '');
       // The bottom bar is sticky at the end of the page, so the page bottom = newest message just above it.
       window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
       await say(r.aiLine);
       if (closed) return; // user left while the reply was spoken
-      if (achieved.length >= ms.goals.length) await finish(true);
+      if (complete) await finish(true);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
         setStatus('');

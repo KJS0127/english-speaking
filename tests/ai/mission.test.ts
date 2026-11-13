@@ -42,3 +42,10 @@ test('generateMission rejects missing fields', async () => {
   await expect(generateMission(scenario, 2, [], 'K', reply({ ...good, openingLine: '' }))).rejects.toBeInstanceOf(BadResponseError);
   await expect(generateMission(scenario, 2, [], 'K', reply({ goals: ['a'] }))).rejects.toBeInstanceOf(BadResponseError);
 });
+
+test('mission prompt asks for multi-exchange goals and hidden details', () => {
+  const sys: string = (buildMissionBody(scenario, 3, []) as any).systemInstruction.parts[0].text;
+  expect(sys).toMatch(/several exchanges/i);
+  expect(sys).toMatch(/hidden detail/i);
+  expect(sys).toMatch(/not .*single sentence/i);
+});

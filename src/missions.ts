@@ -69,6 +69,11 @@ export function fallbackMission(scenario: Scenario, difficulty: number, recentTi
   return { ...pick, goals: [...pick.goals], openingLine: scenario.openingLine, difficulty, source: 'fallback' };
 }
 
+/** Minimum learner exchanges before a mission may end (spec 8). */
+export function minExchanges(difficulty: number): number {
+  return 2 + Math.min(5, Math.max(1, Math.round(difficulty)));
+}
+
 /** How the AI should talk at each difficulty (spec 5.3). */
 export const DIFFICULTY_DESC: Record<number, string> = {
   1: 'Very short, simple sentences and basic words. No surprises.',

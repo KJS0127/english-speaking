@@ -4,7 +4,7 @@ import type { SpeakOpts } from '../audio/speaker';
 import { AuthError, BadResponseError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../ai/errors';
 import type { HistoryItem, TurnRequest } from '../ai/prompt';
 import type { TurnResult } from '../ai/schema';
-import type { Mission } from '../missions';
+import { minExchanges, type Mission } from '../missions';
 import { nextScenario, type Scenario } from '../scenarios';
 import type { Db } from '../store/db';
 import { MAX_LEVEL, MIN_LEVEL, type LevelChange, type Outcome } from './difficulty';
@@ -177,6 +177,12 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
     }
   };
 
+  /** All goals done and the minimum number of exchanges reached. */
+  const missionComplete = () =>
+    !!st.mission &&
+    st.achieved.length >= st.mission.goals.length &&
+    st.userTurns >= minExchanges(st.mission.difficulty);
+
   try {
     let idleSpoken = false;
     for (;;) {
@@ -184,8 +190,8 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
       if (!st.mission) await beginMission();
       else if (!st.introduced) await introduce();
       const mission = st.mission!;
-      if (st.achieved.length >= mission.goals.length) {
-        // resumed after the last goal was reached but before we congratulated
+      if (missionComplete()) {
+        // resumed after the mission was complete but before we congratulated
         await ko(KO.goalAll);
         await finishAndAnnounce(true);
         continue;
@@ -208,6 +214,7 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
         audioWav: encodeWav(heard, CONFIG.sampleRate),
         mission,
         achieved: st.achieved.slice(),
+        exchanges: st.userTurns,
       };
 
       let r: TurnResult;
@@ -283,11 +290,12 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
       const fresh = r.goalsDone.filter((n) => n <= mission.goals.length && !st.achieved.includes(n));
       st.achieved.push(...fresh);
       await en(r.aiLine);
-      if (st.achieved.length >= mission.goals.length) {
+      if (missionComplete()) {
         await ko(KO.goalAll);
         await finishAndAnnounce(true);
       } else if (fresh.length) {
-        await ko(KO.goalOne);
+        // all goals done but the role-play must run a few more exchanges (spec 8)
+        await ko(st.achieved.length >= mission.goals.length ? KO.goalsDoneKeepTalking : KO.goalOne);
       }
     }
   } catch (e) {

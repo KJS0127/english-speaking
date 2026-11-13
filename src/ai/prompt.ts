@@ -1,5 +1,5 @@
 import type { Scenario } from '../scenarios';
-import { DIFFICULTY_DESC, type Mission } from '../missions';
+import { DIFFICULTY_DESC, minExchanges, type Mission } from '../missions';
 import { RESPONSE_SCHEMA } from './schema';
 
 export interface HistoryItem {
@@ -17,6 +17,7 @@ export interface TurnRequest {
   typedText?: string;
   mission?: Mission;
   achieved?: number[]; // 1-based goal numbers already achieved
+  exchanges?: number; // learner turns already completed in this mission
 }
 
 const LEVEL_DESC: Record<1 | 2 | 3, string> = {
@@ -59,10 +60,21 @@ export function buildSystemPrompt(req: TurnRequest): string {
       'The learner has these goals (numbered):',
       ...req.mission.goals.map((g, i) => `${i + 1}. [${done.has(i + 1) ? 'done' : 'todo'}] ${g}`),
       '- goalsDone: list the numbers of [todo] goals the learner clearly achieved in THIS turn (else []).',
-      '- Steer the conversation naturally toward the remaining goals, staying in role. If the learner drifts, bring them back.',
-      '- Never say the learner\'s line for them in aiLine. suggestedReply should help with a remaining goal.',
-      '- When the last remaining goal is achieved in this turn, wrap up the conversation politely in aiLine.',
+      '- Play the role like a real person: greet, react, and ask a follow-up question or confirm details every turn. Reveal hidden details only when asked.',
+      '- Handle at most one goal per turn. If the learner says everything at once, still ask natural follow-up questions.',
+      '- Mark a goal done only when it is actually resolved in the conversation, not when it is merely mentioned.',
+      '- Steer gently toward the remaining goals. If the learner drifts, bring them back. Never say the learner\'s line for them; suggestedReply should help with a remaining goal.',
     );
+    const n = (req.exchanges ?? 0) + 1;
+    const min = minExchanges(req.mission.difficulty);
+    lines.push(`- This is exchange ${n}; the conversation must last at least ${min} exchanges.`);
+    if (n >= min) {
+      lines.push('- If all goals are done after this turn, wrap up politely now in aiLine.');
+    } else {
+      lines.push(
+        '- Do not wrap up or say goodbye yet. If all goals are already done, keep the role-play going with natural related talk (small talk, an extra question, a recommendation).',
+      );
+    }
   }
   if (req.mode === 'car') {
     lines.push('', 'The learner is driving. aiLine must be at most 2 short sentences. Be calm and never rush the learner.');

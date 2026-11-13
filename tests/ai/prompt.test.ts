@@ -81,3 +81,18 @@ test('command detection covers goal and other-scenario commands', () => {
   const p = buildSystemPrompt({ ...base, mission, achieved: [] });
   for (const w of ['목표', 'goal', '다른 상황', 'otherScenario']) expect(p).toContain(w);
 });
+
+test('role-play pacing: exchange count, minimum, follow-up questions, one goal per turn', () => {
+  const p = buildSystemPrompt({ ...base, mission, achieved: [], exchanges: 1 });
+  expect(p).toContain('This is exchange 2; the conversation must last at least 6 exchanges');
+  expect(p).toMatch(/follow-up question/i);
+  expect(p).toMatch(/at most one goal per turn/i);
+  expect(p).toMatch(/do not wrap up/i);
+  expect(p).not.toMatch(/wrap up politely now/i);
+});
+
+test('wrap-up is allowed only once the minimum is reached', () => {
+  const p = buildSystemPrompt({ ...base, mission, achieved: [1], exchanges: 5 });
+  expect(p).toContain('This is exchange 6');
+  expect(p).toMatch(/wrap up politely now/i);
+});

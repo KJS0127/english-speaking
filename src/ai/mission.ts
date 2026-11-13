@@ -21,8 +21,9 @@ export function buildMissionBody(scenario: Scenario, difficulty: number, recentT
     'You design one speaking-practice mission for a Korean adult learning to speak English.',
     `Role-play setting: ${scenario.setupEn}`,
     `Use difficulty ${difficulty} of 5: ${DIFFICULTY_DESC[difficulty] ?? ''}`,
-    `Give ${count}. Each goal is one concrete thing the learner must say or get done, written in Korean (e.g. "큰 사이즈 아이스 라테 주문하기").`,
-    'situationEn describes this specific variation (a detail or small twist that fits the difficulty) for the role-play partner.',
+    `Give ${count}, written in Korean. Each goal must take several exchanges to achieve, not a single sentence: the learner has to answer the partner's follow-up questions, find something out, or solve a problem (e.g. "라테를 주문하고 직원이 묻는 사이즈와 우유 종류에 답하기", "영수증 금액이 다른 이유 알아내기").`,
+    'situationEn is for the role-play partner: describe this variation, the follow-up questions the partner will ask, and hidden details the partner reveals only when the learner asks (prices, times, options).',
+    difficulty >= 3 ? 'Also include one obstacle the learner must handle (sold out, a mistake, a policy, a delay).' : 'Keep the situation friendly with no obstacles.',
     'openingLine is the partner\'s first line in English, matching the difficulty.',
     'Make it different from earlier missions.',
   ];

@@ -17,11 +17,11 @@ const res = (over: Partial<TurnResult> = {}): TurnResult => ({
 
 type Step = TurnResult | Error;
 
-const missionFor = (s: Scenario, goals = ['목표 하나', '목표 둘']): Mission => ({
-  titleKo: `미션 ${s.id}`, goals, situationEn: 'twist', openingLine: s.openingLine, difficulty: 2, source: 'ai',
+const missionFor = (s: Scenario, goals = ['목표 하나', '목표 둘'], difficulty = 1): Mission => ({
+  titleKo: `미션 ${s.id}`, goals, situationEn: 'twist', openingLine: s.openingLine, difficulty, source: 'ai',
 });
 
-function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number; goals?: string[]; change?: LevelChange } = {}) {
+function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number; goals?: string[]; change?: LevelChange; difficulty?: number } = {}) {
   const ctrl = new AbortController();
   const all: { text: string; lang: string; rate: number }[] = [];
   // `spoken` leaves out the mission-intro announcement so older tests keep their indexes
@@ -66,7 +66,7 @@ function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number; g
     },
     async startMission(s) {
       missionsStarted.push(s);
-      return missionFor(s, opts.goals);
+      return missionFor(s, opts.goals, opts.difficulty);
     },
     async finishMission(scenarioId, o) {
       finished.push({ scenarioId, o });
@@ -178,7 +178,7 @@ test('speaks the goals in Korean before the opening line and starts a session wi
   expect(t.all[0].text).toBe(`${KO.goalIntro} 1번, 목표 하나. 2번, 목표 둘.`);
   expect(t.all[1].text).toBe(scenario.openingLine);
   expect(t.sessions[0]).toMatchObject({
-    scenarioId: scenario.id, mode: 'car', missionTitle: `미션 ${scenario.id}`, goals: ['목표 하나', '목표 둘'], difficulty: 2,
+    scenarioId: scenario.id, mode: 'car', missionTitle: `미션 ${scenario.id}`, goals: ['목표 하나', '목표 둘'], difficulty: 1,
   });
 });
 
@@ -204,13 +204,13 @@ test('duplicate or out-of-range goal numbers count once', async () => {
 });
 
 test('all goals: congratulate, evaluate as achieved, end session, start a new mission in the same scenario', async () => {
-  const t = setup([res({ goalsDone: [1] }), res({ goalsDone: [2], correction: { original: 'a', better: 'b', why: '' } })], {
+  const t = setup([res({ goalsDone: [1] }), res({ goalsDone: [2], correction: { original: 'a', better: 'b', why: '' } }), res()], {
     change: 'up',
   });
   await t.run();
   expect(texts(t.spoken)).toContain(KO.goalAll);
-  expect(texts(t.spoken)).toContain(KO.levelUp(3));
-  expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 2, corrections: 1 } }]);
+  expect(texts(t.spoken)).toContain(KO.levelUp(2));
+  expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 3, corrections: 1 } }]);
   expect(t.updates).toContainEqual({ sid: t.sessions[0].id, achieved: true });
   expect(t.ended).toContain(t.sessions[0].id);
   expect(t.missionsStarted).toEqual([scenario, scenario]);
@@ -439,10 +439,10 @@ test('listen rejected with AbortError (audio interrupted) pauses even without si
 describe('review fixes', () => {
   test('pause right after the last goal still counts the mission as achieved on resume', async () => {
     const state = createLoopState(scenario, CONFIG.ttsRate.normal);
-    const a = setup([res({ goalsDone: [1, 2] })]);
+    const a = setup([res(), res(), res({ goalsDone: [1, 2], aiLine: 'LAST' })]);
     const origSpeak = a.deps.speak;
     a.deps.speak = async (text, o) => {
-      if (text === 'Great, your name please?') {
+      if (text === 'LAST') {
         a.ctrl.abort();
       }
       return origSpeak(text, o);
@@ -450,7 +450,7 @@ describe('review fixes', () => {
     expect(await runCarLoop(a.deps, { scenario, weakPhrases: [], state }, a.ctrl.signal)).toBe('paused');
     const b = setup([], { utterances: 0 });
     await runCarLoop(b.deps, { scenario, weakPhrases: [], state }, b.ctrl.signal);
-    expect(b.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 1, corrections: 0 } }]);
+    expect(b.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 3, corrections: 0 } }]);
     expect(texts(b.spoken)).toContain(KO.goalAll);
   });
 
@@ -480,5 +480,30 @@ describe('review fixes', () => {
     expect(b.all[0].text.startsWith(KO.goalIntro)).toBe(true);
     expect(b.all[1].text).toBe(scenario.openingLine);
     expect(b.missionsStarted).toEqual([]);
+  });
+});
+
+describe('minimum exchanges', () => {
+  test('goals done early do not end the mission before the minimum number of exchanges', async () => {
+    // difficulty 2 → at least 4 exchanges
+    const t = setup([res({ goalsDone: [1, 2] }), res(), res(), res()], { difficulty: 2 });
+    await t.run();
+    const allIdx = texts(t.spoken).indexOf(KO.goalAll);
+    expect(allIdx).toBeGreaterThan(-1);
+    expect(t.turns.filter((x) => x.sessionId === t.sessions[0].id)).toHaveLength(4);
+    expect(t.finished).toEqual([{ scenarioId: scenario.id, o: { achieved: true, userTurns: 4, corrections: 0 } }]);
+  });
+
+  test('after 3 exchanges with goals done the mission is not finished yet at difficulty 2', async () => {
+    const t = setup([res({ goalsDone: [1, 2] }), res(), res()], { difficulty: 2 });
+    await t.run();
+    expect(texts(t.spoken)).not.toContain(KO.goalAll);
+    expect(t.finished).toEqual([]);
+  });
+
+  test('the exchange count is sent with each turn', async () => {
+    const t = setup([res(), res()]);
+    await t.run();
+    expect(t.sent.map((r) => r.exchanges)).toEqual([0, 1]);
   });
 });

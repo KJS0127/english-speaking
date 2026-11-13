@@ -238,6 +238,7 @@ describe('missions', () => {
     expect(items.map((li) => li.getAttribute('data-done'))).toEqual(['true', 'false']);
     expect(send.mock.calls[0][0].mission).toBe(mission);
     expect(send.mock.calls[0][0].achieved).toEqual([]);
+    expect(send.mock.calls[0][0].exchanges).toBe(0);
   });
 
   test('session is saved with mission fields', async () => {
@@ -252,10 +253,15 @@ describe('missions', () => {
     await renderHomeMode(root(), deps, scenario);
     await talk();
     await talk();
+    // difficulty 2 needs at least 4 exchanges: goals are done but the role-play continues
+    expect(root().textContent).not.toContain('목표 달성');
+    expect(deps.finishMission).not.toHaveBeenCalled();
+    await talk();
+    await talk();
     expect(root().textContent).toContain('목표 달성');
     expect(root().textContent).toContain('3단계로 올라갔어요!');
     expect(deps.finishMission).toHaveBeenCalledTimes(1);
-    expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: true, userTurns: 2, corrections: 0 });
+    expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: true, userTurns: 4, corrections: 0 });
     expect((await db.listSessions())[0].achieved).toBe(true);
     byText('다음 목표').click();
     await flush();

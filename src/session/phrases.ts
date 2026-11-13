@@ -14,6 +14,7 @@ export const KO = {
   goalsLeft: '남은 목표예요.',
   goalOne: '목표 하나 달성!',
   goalAll: '목표 달성!',
+  goalsDoneKeepTalking: '목표를 다 이뤘어요. 조금 더 이야기해 봐요.',
   newMission: '새 목표로 넘어갈게요.',
   otherScenario: '다른 상황으로 넘어갈게요.',
   levelUp: (n: number) => `${n}단계로 올라갔어요!`,
