@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="말하기 시험판" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <title>말하기 시험판</title>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 16px; background: #111; color: #eee; }
+      input, button { font-size: 18px; width: 100%; box-sizing: border-box; padding: 14px; margin: 6px 0; border-radius: 10px; border: 0; }
+      button { background: #0f766e; color: #fff; font-weight: 700; }
+      #stats { font-size: 16px; line-height: 1.6; margin: 12px 0; }
+      #log { font-family: ui-monospace, monospace; font-size: 12px; white-space: pre-wrap; color: #aaa; }
+    </style>
+  </head>
+  <body>
+    <h2>아이폰 시험판</h2>
+    <input id="key" type="password" placeholder="Gemini API 키" autocomplete="off" />
+    <button id="start">시작</button>
+    <div id="stats"></div>
+    <div id="log"></div>
+    <script type="module" src="./src/spike.ts"></script>
+  </body>
+</html>

@@ -49,5 +49,5 @@ export function createSilenceDetector(opts: VadOpts) {
     return null;
   };
 
-  return { push, reset };
+  return { push, reset, active: () => inSpeech };
 }
