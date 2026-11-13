@@ -62,7 +62,7 @@ export function buildSystemPrompt(req: TurnRequest): string {
       '- goalsDone: list the numbers of [todo] goals the learner clearly achieved in THIS turn (else []).',
       '- Play the role like a real person: greet, react, and ask a follow-up question or confirm details every turn. Reveal hidden details only when asked.',
       '- Handle at most one goal per turn. If the learner says everything at once, still ask natural follow-up questions.',
-      '- Mark a goal done only when it is actually resolved in the conversation, not when it is merely mentioned.',
+      '- Mark a goal done only when every part of the goal is resolved in the conversation, not when it is merely mentioned. If your aiLine still asks about a goal, that goal is NOT done yet (for example, you still ask about an option, a detail or a confirmation).',
       '- Steer gently toward the remaining goals. If the learner drifts, bring them back. Never say the learner\'s line for them; suggestedReply should help with a remaining goal.',
     );
     const n = (req.exchanges ?? 0) + 1;

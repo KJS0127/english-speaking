@@ -96,3 +96,9 @@ test('wrap-up is allowed only once the minimum is reached', () => {
   expect(p).toContain('This is exchange 6');
   expect(p).toMatch(/wrap up politely now/i);
 });
+
+test('a goal is not done while the AI is still asking about it', () => {
+  const p = buildSystemPrompt({ ...base, mission, achieved: [], exchanges: 0 });
+  expect(p).toMatch(/if your aiLine still asks about a goal, that goal is NOT done/i);
+  expect(p).toMatch(/every part of the goal/i);
+});

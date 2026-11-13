@@ -3,7 +3,7 @@ import { openDb, type Db } from '../../src/store/db';
 import { renderHomeMode, type HomeModeDeps } from '../../src/ui/homeMode';
 import { SCENARIOS } from '../../src/scenarios';
 import type { Mission } from '../../src/missions';
-import { AuthError, FatalApiError, QuotaError, RateLimitError } from '../../src/ai/errors';
+import { AuthError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../../src/ai/errors';
 import type { TurnResult } from '../../src/ai/schema';
 
 let n = 0;
@@ -39,6 +39,7 @@ beforeEach(async () => {
     send,
     speak: vi.fn().mockResolvedValue(undefined),
     unlock: () => {},
+    sleep: async () => {},
     startMission: vi.fn(async () => mission),
     finishMission: vi.fn(async () => null),
   };
@@ -333,5 +334,41 @@ describe('review fixes', () => {
     await flush();
     expect(deps.finishMission).toHaveBeenCalledTimes(1);
     expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: true, userTurns: 1, corrections: 0 });
+  });
+});
+
+describe('connection problems', () => {
+  test('retries automatically when the server is busy, then shows the reply', async () => {
+    send.mockRejectedValueOnce(Object.assign(new NetworkError('503'), { reason: 'busy' })).mockResolvedValueOnce(res());
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(q('.chat').textContent).toContain('What size?');
+  });
+
+  test('after retries, a busy server gets its own message (not "check the internet")', async () => {
+    send.mockRejectedValue(Object.assign(new NetworkError('503'), { reason: 'busy' }));
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(q('.status').textContent).toContain('AI 서버가 바빠요');
+    expect(q('.status').textContent).not.toContain('인터넷 연결');
+  });
+
+  test('a slow reply gets a timeout message', async () => {
+    send.mockRejectedValue(Object.assign(new NetworkError('t'), { reason: 'timeout' }));
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    expect(q('.status').textContent).toContain('응답이 늦어요');
+  });
+
+  test('a status message scrolls the page so the newest message stays above the bottom bar', async () => {
+    const spy = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    send.mockRejectedValue(Object.assign(new NetworkError('t'), { reason: 'timeout' }));
+    await renderHomeMode(root(), deps, scenario);
+    spy.mockClear();
+    await talk();
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

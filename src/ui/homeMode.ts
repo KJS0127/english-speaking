@@ -20,6 +20,7 @@ export interface HomeModeDeps {
   speak: (text: string, opts: SpeakOpts) => Promise<void>;
   unlock: () => void;
   stopSpeaking?: () => void;
+  sleep?: (ms: number) => Promise<void>;
   startMission: (scenario: Scenario) => Promise<Mission>;
   finishMission: (scenarioId: string, o: Outcome) => Promise<LevelChange>;
 }
@@ -74,8 +75,12 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
     h('div', { className: 'bubble ai' }, text,
       h('div', { className: 'tools' }, h('button', { type: 'button', onclick: () => void say(text) }, '다시 듣기')));
 
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const scrollToEnd = () => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
   const setStatus = (msg: string | Node) => {
     status.replaceChildren(msg);
+    // the bottom bar grows with the message: keep the newest chat message visible above it
+    if (msg !== '') scrollToEnd();
   };
 
   const renderGoals = () => {
@@ -168,6 +173,20 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
     }
   };
 
+  /** Retries busy/slow/offline errors twice before giving up (car mode has its own retry loop). */
+  const sendWithRetry = async (req: TurnRequest, key: string): Promise<TurnResult> => {
+    const delays = [2000, 4000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await deps.send(req, key);
+      } catch (e) {
+        if (!(e instanceof NetworkError) || attempt >= delays.length || closed) throw e;
+        setStatus('연결이 불안정해서 다시 시도하고 있어요…');
+        await sleep(delays[attempt]);
+      }
+    }
+  };
+
   const onMic = async () => {
     if (listenCtrl) {
       finishCtrl?.abort(); // second tap while listening = done talking, send now
@@ -197,7 +216,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       }
       setStatus('생각 중…');
       const typed = method === 1 ? textArea.value.trim() : undefined;
-      const r = await deps.send(
+      const r = await sendWithRetry(
         {
           scenario, mode: 'home', level: method, history: history.slice(),
           weakPhrases: (await deps.db.topWeakPhrases(5)).map((w) => ({ original: w.original, better: w.better })),
@@ -245,7 +264,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       const complete = allGoals && userTurns >= minExchanges(ms.difficulty);
       setStatus(fresh.length && !complete ? (allGoals ? KO.goalsDoneKeepTalking : KO.goalOne) : '');
       // The bottom bar is sticky at the end of the page, so the page bottom = newest message just above it.
-      window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+      scrollToEnd();
       await say(r.aiLine);
       if (closed) return; // user left while the reply was spoken
       if (complete) await finish(true);
@@ -265,7 +284,13 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
         blocked = true;
         setStatus(h('span', { className: 'error' }, '오늘 무료 사용량이 끝났어요. 내일 다시 해 주세요.'));
       } else if (e instanceof NetworkError) {
-        setStatus(h('span', { className: 'error' }, '인터넷 연결을 확인하고 다시 눌러 주세요.'));
+        const msg =
+          e.reason === 'busy'
+            ? 'AI 서버가 바빠요. 잠시 후 다시 눌러 주세요.'
+            : e.reason === 'timeout'
+              ? 'AI 응답이 늦어요. 다시 눌러 주세요.'
+              : '인터넷 연결을 확인하고 다시 눌러 주세요.';
+        setStatus(h('span', { className: 'error' }, msg));
       } else if (e instanceof BadResponseError) {
         setStatus('잘 못 들었어요. 다시 말해 주세요.');
       } else {

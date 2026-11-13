@@ -47,17 +47,23 @@ export async function callGemini(
   signal?: AbortSignal,
 ): Promise<unknown> {
   let lastFatal: FatalApiError | null = null;
+  let lastBusy: NetworkError | null = null;
   for (let i = modelIdx; i < CONFIG.models.length; i++) {
     try {
       const r = await callModel(CONFIG.models[i], body, apiKey, fetchImpl, signal);
       modelIdx = i;
       return r;
     } catch (e) {
+      // a busy server (5xx) may be fine on the other model
+      if (e instanceof NetworkError && e.reason === 'busy') {
+        lastBusy = e;
+        continue;
+      }
       if (!(e instanceof FatalApiError)) throw e;
       lastFatal = e;
     }
   }
-  throw lastFatal ?? new FatalApiError('no model available');
+  throw lastBusy ?? lastFatal ?? new FatalApiError('no model available');
 }
 
 function apiMessage(text: string): string {
@@ -87,7 +93,8 @@ async function callModel(
       signal: combined,
     });
   } catch (e) {
-    throw new NetworkError(String(e));
+    const timedOut = e instanceof DOMException && e.name === 'TimeoutError' || combined.reason instanceof DOMException && combined.reason.name === 'TimeoutError';
+    throw new NetworkError(String(e), timedOut ? 'timeout' : 'offline');
   }
 
   if (!res.ok) {
@@ -98,7 +105,7 @@ async function callModel(
       if (/PerDay/i.test(text)) throw new QuotaError(text);
       throw new RateLimitError(text, retryDelayMs(text));
     }
-    if (res.status >= 500) throw new NetworkError(`HTTP ${res.status}`);
+    if (res.status >= 500) throw new NetworkError(`HTTP ${res.status}`, 'busy');
     if (res.status === 404 || /INVALID_ARGUMENT|FAILED_PRECONDITION/.test(text)) {
       throw new FatalApiError(`${model} (HTTP ${res.status}): ${apiMessage(text)}`);
     }

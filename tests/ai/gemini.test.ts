@@ -121,3 +121,28 @@ test('maps non-JSON text to BadResponseError', async () => {
 test('maps missing candidates to BadResponseError', async () => {
   await expect(sendTurn(req, 'K', status(200))).rejects.toBeInstanceOf(BadResponseError);
 });
+
+test('server busy (503) on one model falls back to the next model', async () => {
+  resetModelChoice();
+  const f = vi.fn(async (url: string) =>
+    url.includes(CONFIG.models[0]) ? new Response('{"error":{"message":"overloaded"}}', { status: 503 }) : ok({ transcript: 'a', aiLine: 'b' }),
+  );
+  const r = await sendTurn(req, 'K', f as unknown as typeof fetch);
+  expect(r.aiLine).toBe('b');
+  resetModelChoice();
+});
+
+test('server busy on every model is a NetworkError saying the server is busy', async () => {
+  resetModelChoice();
+  const err = await sendTurn(req, 'K', status(503)).catch((e) => e);
+  expect(err).toBeInstanceOf(NetworkError);
+  expect(err.reason).toBe('busy');
+  resetModelChoice();
+});
+
+test('timeouts and fetch failures carry a reason', async () => {
+  const t = await sendTurn(req, 'K', vi.fn().mockRejectedValue(new DOMException('timeout', 'TimeoutError'))).catch((e) => e);
+  expect(t.reason).toBe('timeout');
+  const o = await sendTurn(req, 'K', vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))).catch((e) => e);
+  expect(o.reason).toBe('offline');
+});

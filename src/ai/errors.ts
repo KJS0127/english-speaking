@@ -12,9 +12,13 @@ export class RateLimitError extends Error {
     super(message);
   }
 }
-/** Retryable transport problem (offline, timeout, 5xx). */
+export type NetworkReason = 'offline' | 'timeout' | 'busy';
+/** Retryable transport problem: no connection, too slow, or the AI server is busy (5xx). */
 export class NetworkError extends Error {
   name = 'NetworkError';
+  constructor(message: string, public reason: NetworkReason = 'offline') {
+    super(message);
+  }
 }
 /** One bad reply; asking the learner to repeat may help. */
 export class BadResponseError extends Error {
