@@ -126,3 +126,18 @@ input[type='range'] { width: 100%; margin-top: 8px; }
 .tabs { display: flex; gap: 8px; margin: 8px 0; }
 .tabs button[aria-pressed='true'] { background: var(--accent); color: var(--accent-ink); }
 .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+
+/* mission goals */
+.goals {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 12px 14px; margin: 4px 0 12px;
+}
+.goals-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 700; }
+.goals ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.goals li { padding: 4px 0 4px 28px; position: relative; }
+.goals li::before { content: '☐'; position: absolute; left: 4px; color: var(--muted); }
+.goals li[data-done='true'] { color: var(--muted); text-decoration: line-through; }
+.goals li[data-done='true']::before { content: '☑'; color: var(--accent); text-decoration: none; }
+.levels-label { margin: 0 0 4px; font-size: 13px; }
+.card-title .badge { margin-left: 6px; vertical-align: middle; }
+.goals-list { color: var(--muted); }

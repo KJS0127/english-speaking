@@ -14,7 +14,7 @@ const fmtDate = (ms: number) => {
   const d = new Date(ms);
   return `${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
-const title = (s: SessionRec) => findScenario(s.scenarioId)?.titleKo ?? s.scenarioId;
+const title = (s: SessionRec) => s.missionTitle ?? findScenario(s.scenarioId)?.titleKo ?? s.scenarioId;
 
 export async function renderReview(root: HTMLElement, deps: ReviewDeps, sessionId?: string): Promise<void> {
   const rate = (await deps.db.getSetting<number>('ttsRate')) ?? CONFIG.ttsRate.normal;
@@ -31,7 +31,8 @@ export async function renderReview(root: HTMLElement, deps: ReviewDeps, sessionI
     mount(
       root,
       h('header', {}, h('a', { href: '#/review' }, '← 복습'), h('h1', {}, title(session))),
-      h('p', { className: 'hint' }, `${fmtDate(session.startedAt)} · ${session.mode === 'car' ? '차' : '집'}`),
+      h('p', { className: 'hint' }, `${fmtDate(session.startedAt)} · ${session.mode === 'car' ? '차' : '집'}${session.difficulty ? ` · ${session.difficulty}단계` : ''}${session.achieved ? ' · 목표 달성 ✓' : ''}`),
+      session.goals?.length ? h('ul', { className: 'goals-list' }, ...session.goals.map((g) => h('li', {}, g))) : null,
       turns.length
         ? h(
             'section',
@@ -67,7 +68,7 @@ export async function renderReview(root: HTMLElement, deps: ReviewDeps, sessionI
             h(
               'div',
               { className: 'card session-row' },
-              h('a', { href: routeToHash({ name: 'review', sessionId: s.id }) }, title(s)),
+              h('a', { href: routeToHash({ name: 'review', sessionId: s.id }) }, s.achieved ? `✓ ${title(s)}` : title(s)),
               h('span', {}, h('span', { className: 'hint' }, `${fmtDate(s.startedAt)} `), h('span', { className: 'badge' }, s.mode === 'car' ? '차' : '집')),
             ),
           )

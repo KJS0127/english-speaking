@@ -18,6 +18,6 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Attrs = 
   return el;
 }
 
-export function mount(root: HTMLElement, ...children: Node[]): void {
-  root.replaceChildren(...children);
+export function mount(root: HTMLElement, ...children: (Node | null | undefined | false)[]): void {
+  root.replaceChildren(...children.filter((c): c is Node => !!c));
 }

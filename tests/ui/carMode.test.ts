@@ -49,8 +49,16 @@ beforeEach(async () => {
         return { release: async () => { released++; } };
       },
     },
-    runLoop: (_d, ctx, signal) => {
+    startMission: vi.fn(async () => ({ titleKo: 'M', goals: ['g'], situationEn: 's', openingLine: 'Hi', difficulty: 1, source: 'ai' as const })),
+    finishMission: vi.fn(async () => null),
+    runLoop: async (d, ctx, signal) => {
       loopCalls.push({ ctx, signal });
+      // mimic the real loop: first run starts a mission session
+      if (ctx.state && !ctx.state.mission) {
+        ctx.state.mission = await d.startMission(ctx.scenario, signal);
+        ctx.state.sessionId = 'sess-' + loopCalls.length;
+        await d.db.startSession({ id: ctx.state.sessionId, scenarioId: ctx.scenario.id, mode: 'car', startedAt: 1 });
+      }
       return new Promise<LoopEnd>((resolve) => {
         signal.addEventListener('abort', () => resolve('paused'));
         if (loopResult) resolve(loopResult);
@@ -77,7 +85,7 @@ test('start requests wake lock, opens mic, unlocks speech, starts session with w
   expect(loopCalls[0].ctx.scenario).toBe(scenario);
   expect(loopCalls[0].ctx.weakPhrases).toEqual([{ original: 'I want', better: "I'd like" }]);
   const sessions = await db.listSessions();
-  expect(sessions.map((s) => s.id)).toEqual([loopCalls[0].ctx.sessionId]);
+  expect(sessions.map((s) => s.id)).toEqual([loopCalls[0].ctx.state.sessionId]);
   expect(sessions[0].mode).toBe('car');
   expect(q('button.car-start')).toBeNull();
 });
@@ -113,7 +121,7 @@ test('이어하기 resumes with same session id', async () => {
   q<HTMLButtonElement>('button.car-start')!.click();
   await flush();
   expect(loopCalls).toHaveLength(2);
-  expect(loopCalls[1].ctx.sessionId).toBe(loopCalls[0].ctx.sessionId);
+  expect(loopCalls[1].ctx.state).toBe(loopCalls[0].ctx.state);
   expect(await db.listSessions()).toHaveLength(1);
 });
 
@@ -190,6 +198,7 @@ test('quit button on the running screen ends the session and goes home', async (
   expect((await db.listSessions())[0].endedAt).not.toBeNull();
   expect(location.hash).toBe('#/');
   expect(released).toBe(1);
+  expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: false, userTurns: 0, corrections: 0 });
 });
 
 test('mic permission failure shows message', async () => {

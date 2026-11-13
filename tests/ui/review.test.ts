@@ -88,3 +88,17 @@ test('unknown session id shows not-found message', async () => {
   await renderReview(root(), { db, speak }, 'missing');
   expect(root().textContent).toContain('기록을 찾을 수 없어요');
 });
+
+test('mission sessions show the mission title, level and an achieved mark', async () => {
+  await db.startSession({
+    id: 'm', scenarioId: 'cafe-order', mode: 'car', startedAt: 5, missionTitle: '라테 주문 미션', goals: ['라테 주문하기'], difficulty: 3,
+  });
+  await db.updateSession('m', { achieved: true });
+  await renderReview(root(), { db, speak });
+  const row = root().querySelector('.session-row')!;
+  expect(row.textContent).toContain('라테 주문 미션');
+  expect(row.textContent).toContain('✓');
+  await renderReview(root(), { db, speak }, 'm');
+  expect(root().textContent).toContain('라테 주문하기');
+  expect(root().textContent).toContain('3단계');
+});

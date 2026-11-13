@@ -4,7 +4,9 @@ import type { SpeakOpts } from '../audio/speaker';
 import type { TurnRequest } from '../ai/prompt';
 import type { TurnResult } from '../ai/schema';
 import type { Scenario } from '../scenarios';
-import { createLoopState, runCarLoop, type LoopEnd, type LoopState } from '../session/carLoop';
+import type { Mission } from '../missions';
+import { closeMissionForQuit, createLoopState, runCarLoop, type LoopEnd, type LoopState } from '../session/carLoop';
+import type { LevelChange, Outcome } from '../session/difficulty';
 import type { Db } from '../store/db';
 import { h, mount } from './dom';
 import { navigate } from './router';
@@ -25,6 +27,8 @@ export interface CarModeDeps {
   stopSpeaking?: () => void;
   wakeLock?: WakeLockLike;
   runLoop?: typeof runCarLoop;
+  startMission: (scenario: Scenario, signal?: AbortSignal) => Promise<Mission>;
+  finishMission: (scenarioId: string, o: Outcome) => Promise<LevelChange>;
 }
 
 const END_MSG: Record<Exclude<LoopEnd, 'paused'>, string> = {
@@ -40,8 +44,7 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
   const runLoop = deps.runLoop ?? runCarLoop;
   const apiKey = (await deps.db.getSetting<string>('apiKey')) ?? '';
   const rate = (await deps.db.getSetting<number>('ttsRate')) ?? CONFIG.ttsRate.normal;
-  let sessionId: string | null = null;
-  let state: LoopState | null = null;
+  const state: LoopState = createLoopState(scenario, rate);
   let mic: Mic | null = null;
   let lock: { release(): Promise<void> } | null = null;
   let ctrl: AbortController | null = null;
@@ -115,18 +118,13 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
       showStart('시작', h('p', { className: 'note warn' }, '마이크를 사용할 수 없어요. 마이크 권한을 허용해 주세요.'));
       return;
     }
-    if (!sessionId) {
-      sessionId = newId();
-      state = createLoopState(scenario, rate);
-      await deps.db.startSession({ id: sessionId, scenarioId: scenario.id, mode: 'car', startedAt: Date.now() });
-    }
     const weakPhrases = (await deps.db.topWeakPhrases(5)).map((w) => ({ original: w.original, better: w.better }));
     ctrl = new AbortController();
     warnEl.hidden = locked || !deps.wakeLock;
     screen(
       stateEl,
       warnEl,
-      h('p', { className: 'note' }, '말로만 조작해요: 다시 · 천천히 · 한국어로 · 힌트 · 다음 · 그만'),
+      h('p', { className: 'note' }, '말로만 조작해요: 목표 · 다시 · 천천히 · 한국어로 · 힌트 · 다음 · 다른 상황 · 그만'),
       h('button', { className: 'car-quit', type: 'button', onclick: () => quit() }, '그만하고 홈으로'),
     );
     setState('준비 중');
@@ -148,12 +146,17 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
             setState('말하는 중');
             return deps.speak(text, o);
           },
+          startMission: (s, signal) => {
+            setState('목표 준비 중');
+            return deps.startMission(s, signal);
+          },
+          finishMission: deps.finishMission,
           db: deps.db,
           now: () => Date.now(),
           sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
           newId,
         },
-        { sessionId, scenario, weakPhrases, rate, state: state! },
+        { scenario, weakPhrases, rate, state },
         ctrl.signal,
       );
     } catch {
@@ -165,7 +168,7 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
     if (quitting) {
       mic?.close();
       mic = null;
-      await deps.db.endSession(sessionId!, Date.now()).catch(() => {});
+      await closeMissionForQuit({ finishMission: deps.finishMission, db: deps.db, now: () => Date.now() }, state).catch(() => {});
       navigate({ name: 'home' });
       return;
     }

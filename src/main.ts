@@ -2,6 +2,8 @@ import './style.css';
 import { openMic } from './audio/mic';
 import { speak, stopSpeaking, unlockSpeech } from './audio/speaker';
 import { sendTurn } from './ai/gemini';
+import { generateMission } from './ai/mission';
+import { finishMission, startMission, type RunnerDeps } from './session/missionRunner';
 import { findScenario } from './scenarios';
 import { openDb } from './store/db';
 import { renderCarMode } from './ui/carMode';
@@ -17,6 +19,15 @@ async function boot() {
   const send = (req: Parameters<typeof sendTurn>[0], key: string, signal?: AbortSignal) =>
     sendTurn(req, key, fetch, signal);
   const wakeLock = 'wakeLock' in navigator ? (navigator as any).wakeLock : undefined;
+  const runner: RunnerDeps = {
+    db,
+    generate: async (s, d, recent, signal) =>
+      generateMission(s, d, recent, (await db.getSetting<string>('apiKey')) ?? '', fetch, signal),
+  };
+  const missions = {
+    startMission: (s: Parameters<typeof startMission>[1], signal?: AbortSignal) => startMission(runner, s, signal),
+    finishMission: (id: string, o: Parameters<typeof finishMission>[2]) => finishMission(runner, id, o),
+  };
 
   onRoute((r) => {
     window.scrollTo(0, 0);
@@ -29,9 +40,9 @@ async function boot() {
         const scenario = findScenario(r.scenarioId);
         if (!scenario) return navigate({ name: 'home' });
         if (r.name === 'homeMode') {
-          void renderHomeMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, stopSpeaking }, scenario);
+          void renderHomeMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, stopSpeaking, ...missions }, scenario);
         } else {
-          void renderCarMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, stopSpeaking, wakeLock }, scenario);
+          void renderCarMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, stopSpeaking, wakeLock, ...missions }, scenario);
         }
         break;
       }

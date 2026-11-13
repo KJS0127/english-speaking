@@ -10,6 +10,7 @@ export async function renderHome(root: HTMLElement, db: Db): Promise<void> {
     navigate({ name: 'settings' });
     return;
   }
+  const levels = new Map((await db.listProgress()).map((p) => [p.scenarioId, p.level]));
   const sections = ORDER.map((cat) =>
     h(
       'section',
@@ -19,7 +20,7 @@ export async function renderHome(root: HTMLElement, db: Db): Promise<void> {
         h(
           'div',
           { className: 'card', 'data-scenario': s.id },
-          h('div', { className: 'card-title' }, s.titleKo),
+          h('div', { className: 'card-title' }, s.titleKo, ' ', h('span', { className: 'badge' }, `${levels.get(s.id) ?? 1}단계`)),
           h(
             'div',
             { className: 'card-actions' },

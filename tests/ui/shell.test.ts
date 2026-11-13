@@ -95,3 +95,12 @@ test('home lists categories with scenarios and two mode buttons', async () => {
   expect(cafe.querySelector('a[href="#/car/cafe-order"]')!.textContent).toBe('차에서 연습');
   expect(root().querySelector('a[href="#/review"]')).not.toBeNull();
 });
+
+test('home cards show the difficulty level of each scenario', async () => {
+  const db = await fresh();
+  await db.setSetting('apiKey', 'K');
+  await db.saveProgress({ scenarioId: 'cafe-order', level: 3, failStreak: 0, recentMissions: [] });
+  await renderHome(root(), db);
+  expect(root().querySelector('[data-scenario="cafe-order"] .badge')!.textContent).toBe('3단계');
+  expect(root().querySelector('[data-scenario="hotel-checkin"] .badge')!.textContent).toBe('1단계');
+});

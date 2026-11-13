@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { openDb, type Db } from '../../src/store/db';
 import { renderHomeMode, type HomeModeDeps } from '../../src/ui/homeMode';
 import { SCENARIOS } from '../../src/scenarios';
+import type { Mission } from '../../src/missions';
 import { AuthError, FatalApiError, QuotaError, RateLimitError } from '../../src/ai/errors';
 import type { TurnResult } from '../../src/ai/schema';
 
@@ -16,6 +17,10 @@ const res = (over: Partial<TurnResult> = {}): TurnResult => ({
 });
 
 let db: Db;
+const mission: Mission = {
+  titleKo: '라테 주문', goals: ['라테 주문하기', '영수증 요청하기'], situationEn: 'x', openingLine: scenario.openingLine,
+  difficulty: 2, source: 'ai',
+};
 let deps: HomeModeDeps;
 let send: ReturnType<typeof vi.fn>;
 const root = () => document.getElementById('root')!;
@@ -34,6 +39,8 @@ beforeEach(async () => {
     send,
     speak: vi.fn().mockResolvedValue(undefined),
     unlock: () => {},
+    startMission: vi.fn(async () => mission),
+    finishMission: vi.fn(async () => null),
   };
 });
 
@@ -200,4 +207,77 @@ test('QuotaError shows 오늘 무료 사용량이 끝났어요 and disables mic'
   await talk();
   expect(q('.status').textContent).toContain('오늘 무료 사용량이 끝났어요');
   expect(q<HTMLButtonElement>('button.mic').disabled).toBe(true);
+});
+
+describe('missions', () => {
+  test('shows a preparing message with the mic locked, then the goal card with level', async () => {
+    let resolve!: (m: Mission) => void;
+    deps.startMission = vi.fn(() => new Promise<Mission>((r) => (resolve = r)));
+    const p = renderHomeMode(root(), deps, scenario);
+    await flush();
+    expect(root().textContent).toContain('이번 목표를 준비하고 있어요');
+    expect(q<HTMLButtonElement>('button.mic').disabled).toBe(true);
+    resolve(mission);
+    await p;
+    expect(q('.goals').textContent).toContain('라테 주문');
+    expect(q('.goals').textContent).toContain('2단계');
+    expect([...root().querySelectorAll('.goals li')].map((li) => li.textContent)).toEqual(['라테 주문하기', '영수증 요청하기']);
+    expect(q<HTMLButtonElement>('button.mic').disabled).toBe(false);
+  });
+
+  test('practice-method buttons are labelled 연습 방식', async () => {
+    await renderHomeMode(root(), deps, scenario);
+    expect(q('.levels-label').textContent).toBe('연습 방식');
+  });
+
+  test('goal checkbox updates when goalsDone arrives and mission is sent with the turn', async () => {
+    send.mockResolvedValue(res({ goalsDone: [1] }));
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    const items = [...root().querySelectorAll('.goals li')];
+    expect(items.map((li) => li.getAttribute('data-done'))).toEqual(['true', 'false']);
+    expect(send.mock.calls[0][0].mission).toBe(mission);
+    expect(send.mock.calls[0][0].achieved).toEqual([]);
+  });
+
+  test('session is saved with mission fields', async () => {
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    expect((await db.listSessions())[0]).toMatchObject({ missionTitle: '라테 주문', goals: mission.goals, difficulty: 2 });
+  });
+
+  test('all goals shows success with level-up text and a next-mission button', async () => {
+    (deps.finishMission as any).mockResolvedValue('up');
+    send.mockResolvedValueOnce(res({ goalsDone: [1] })).mockResolvedValueOnce(res({ goalsDone: [2] }));
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    await talk();
+    expect(root().textContent).toContain('목표 달성');
+    expect(root().textContent).toContain('3단계로 올라갔어요!');
+    expect(deps.finishMission).toHaveBeenCalledTimes(1);
+    expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: true, userTurns: 2, corrections: 0 });
+    expect((await db.listSessions())[0].achieved).toBe(true);
+    byText('다음 목표').click();
+    await flush();
+    expect(deps.startMission).toHaveBeenCalledTimes(2);
+  });
+
+  test('leaving evaluates the unfinished mission once', async () => {
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+    expect(deps.finishMission).toHaveBeenCalledTimes(1);
+    expect(deps.finishMission).toHaveBeenCalledWith(scenario.id, { achieved: false, userTurns: 1, corrections: 0 });
+  });
+
+  test('next command evaluates and starts a new mission in the same scenario', async () => {
+    send.mockResolvedValueOnce(res()).mockResolvedValueOnce(res({ command: 'next', aiLine: 'OK' }));
+    await renderHomeMode(root(), deps, scenario);
+    await talk();
+    await talk();
+    expect(deps.finishMission).toHaveBeenCalledTimes(1);
+    expect(deps.startMission).toHaveBeenCalledTimes(2);
+  });
 });
