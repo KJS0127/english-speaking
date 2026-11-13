@@ -1,7 +1,7 @@
 import { CONFIG } from '../config';
 import { encodeWav } from '../audio/wav';
 import type { SpeakOpts } from '../audio/speaker';
-import { AuthError, BadResponseError, NetworkError, QuotaError } from '../ai/errors';
+import { AuthError, BadResponseError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../ai/errors';
 import type { HistoryItem, TurnRequest } from '../ai/prompt';
 import type { TurnResult } from '../ai/schema';
 import { nextScenario, type Scenario } from '../scenarios';
@@ -9,8 +9,9 @@ import type { Db } from '../store/db';
 import { EN_RETRY, KO } from './phrases';
 
 export interface LoopDeps {
-  listen(opts: { signal: AbortSignal; idleMs: number; onIdle: () => void }): Promise<Float32Array>;
-  send(req: TurnRequest): Promise<TurnResult>;
+  /** Resolves with one utterance, or 'idle' after idleMs of silence (idleMs 0 = never). The mic is stopped when it resolves. */
+  listen(opts: { signal: AbortSignal; idleMs: number }): Promise<Float32Array | 'idle'>;
+  send(req: TurnRequest, signal: AbortSignal): Promise<TurnResult>;
   speak(text: string, opts: SpeakOpts): Promise<void>;
   db: Pick<Db, 'addTurn' | 'endSession'>;
   now(): number;
@@ -18,29 +19,43 @@ export interface LoopDeps {
   newId(): string;
 }
 
+/** Conversation state kept across pause/resume of the same session. */
+export interface LoopState {
+  scenario: Scenario;
+  history: HistoryItem[];
+  last: { aiLine: string; aiLineKo: string; suggestedReply: string };
+  idx: number;
+  rate: number;
+  opened: boolean;
+}
+
+export function createLoopState(scenario: Scenario, rate: number): LoopState {
+  return { scenario, history: [], last: { aiLine: '', aiLineKo: '', suggestedReply: '' }, idx: 0, rate, opened: false };
+}
+
 export interface LoopCtx {
   sessionId: string;
   scenario: Scenario;
   weakPhrases: { original: string; better: string }[];
+  rate?: number;
+  state?: LoopState;
 }
 
-export type LoopEnd = 'stopped' | 'quota' | 'auth' | 'paused';
+export type LoopEnd = 'stopped' | 'quota' | 'auth' | 'error' | 'paused';
 
 class Paused extends Error {}
+class TooManyBad extends Error {}
 
 export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSignal): Promise<LoopEnd> {
-  let scenario = ctx.scenario;
-  let rate: number = CONFIG.ttsRate.normal;
-  let history: HistoryItem[] = [];
-  let last = { aiLine: '', aiLineKo: '', suggestedReply: '' };
-  let idx = 0;
+  const st = ctx.state ?? createLoopState(ctx.scenario, ctx.rate ?? CONFIG.ttsRate.normal);
+  let badInRow = 0;
 
   const check = () => {
     if (signal.aborted) throw new Paused();
   };
   const en = async (text: string) => {
     check();
-    await deps.speak(text, { lang: 'en-US', rate });
+    await deps.speak(text, { lang: 'en-US', rate: st.rate });
   };
   const ko = async (text: string) => {
     check();
@@ -55,63 +70,74 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
     return reason;
   };
   const open = async () => {
-    history = [{ role: 'ai', text: scenario.openingLine }];
-    last = { aiLine: scenario.openingLine, aiLineKo: '', suggestedReply: '' };
-    await en(scenario.openingLine);
+    st.history = [{ role: 'ai', text: st.scenario.openingLine }];
+    st.last = { aiLine: st.scenario.openingLine, aiLineKo: '', suggestedReply: '' };
+    st.opened = true;
+    await en(st.scenario.openingLine);
   };
 
-  // Sends one utterance, retrying on network errors until it gets through or the loop is paused.
+  // Sends one utterance; retries network errors (announced once) and rate limits (silently, capped).
   const sendWithRetry = async (req: TurnRequest): Promise<TurnResult> => {
-    let attempt = 0;
+    let netAttempt = 0;
+    let rateAttempt = 0;
     let offline = false;
+    const delays = CONFIG.retryDelaysMs;
     for (;;) {
       check();
       try {
-        const r = await deps.send(req);
+        const r = await deps.send(req, signal);
         if (offline) await ko(KO.online);
         return r;
       } catch (e) {
+        check();
+        if (e instanceof RateLimitError) {
+          if (rateAttempt >= CONFIG.maxRateLimitRetries) throw new QuotaError('rate limit did not clear');
+          rateAttempt++;
+          await deps.sleep(e.retryAfterMs ?? delays[delays.length - 1]);
+          continue;
+        }
         if (!(e instanceof NetworkError)) throw e;
         if (!offline) {
           offline = true;
           await ko(KO.offline);
         }
-        const delays = CONFIG.retryDelaysMs;
-        await deps.sleep(delays[Math.min(attempt, delays.length - 1)]);
-        attempt++;
+        await deps.sleep(delays[Math.min(netAttempt, delays.length - 1)]);
+        netAttempt++;
       }
     }
   };
 
   try {
-    await open();
+    if (!st.opened) await open();
+    let idleSpoken = false;
     for (;;) {
       check();
-      let idleSpoken = false;
-      const audio = await deps.listen({
-        signal,
-        idleMs: CONFIG.idlePromptMs,
-        onIdle: () => {
-          if (idleSpoken) return;
-          idleSpoken = true;
-          void deps.speak(KO.idle, { lang: 'ko-KR', rate: CONFIG.ttsRate.normal });
-        },
-      });
+      const heard = await deps.listen({ signal, idleMs: idleSpoken ? 0 : CONFIG.idlePromptMs });
       check();
+      if (heard === 'idle') {
+        if (!idleSpoken) {
+          idleSpoken = true;
+          await ko(KO.idle);
+        }
+        continue;
+      }
       const req: TurnRequest = {
-        scenario,
+        scenario: st.scenario,
         mode: 'car',
         level: 3,
-        history: history.slice(),
+        history: st.history.slice(),
         weakPhrases: ctx.weakPhrases,
-        audioWav: encodeWav(audio, CONFIG.sampleRate),
+        audioWav: encodeWav(heard, CONFIG.sampleRate),
       };
 
       let r: TurnResult;
       try {
         r = await sendWithRetry(req);
+        badInRow = 0;
       } catch (e) {
         if (e instanceof BadResponseError) {
+          badInRow++;
+          if (badInRow >= CONFIG.maxConsecutiveBadResponses) throw new TooManyBad();
           await en(EN_RETRY);
           continue;
         }
@@ -120,27 +146,27 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
 
       switch (r.command) {
         case 'repeat':
-          await en(last.aiLine);
+          await en(st.last.aiLine);
           continue;
         case 'slower':
-          rate = CONFIG.ttsRate.slow;
-          await en(last.aiLine);
+          st.rate = CONFIG.ttsRate.slow;
+          await en(st.last.aiLine);
           continue;
         case 'korean':
-          if (last.aiLineKo) await ko(last.aiLineKo);
-          else await en(last.aiLine);
+          if (st.last.aiLineKo) await ko(st.last.aiLineKo);
+          else await en(st.last.aiLine);
           continue;
         case 'hint':
-          if (last.suggestedReply) {
+          if (st.last.suggestedReply) {
             await ko(KO.hintIntro);
-            await en(last.suggestedReply);
+            await en(st.last.suggestedReply);
           } else {
-            await en(last.aiLine);
+            await en(st.last.aiLine);
           }
           continue;
         case 'next':
           await ko(KO.next);
-          scenario = nextScenario(scenario);
+          st.scenario = nextScenario(st.scenario);
           await open();
           continue;
         case 'stop':
@@ -148,12 +174,13 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
       }
 
       if (!r.transcript.trim()) continue;
-      history.push({ role: 'user', text: r.transcript }, { role: 'ai', text: r.aiLine });
-      last = { aiLine: r.aiLine, aiLineKo: r.aiLineKo, suggestedReply: r.suggestedReply };
+      idleSpoken = false;
+      st.history.push({ role: 'user', text: r.transcript }, { role: 'ai', text: r.aiLine });
+      st.last = { aiLine: r.aiLine, aiLineKo: r.aiLineKo, suggestedReply: r.suggestedReply };
       await deps.db.addTurn({
         id: deps.newId(),
         sessionId: ctx.sessionId,
-        idx: idx++,
+        idx: st.idx++,
         at: deps.now(),
         transcript: r.transcript,
         aiLine: r.aiLine,
@@ -166,6 +193,8 @@ export async function runCarLoop(deps: LoopDeps, ctx: LoopCtx, signal: AbortSign
     if (e instanceof Paused || (e instanceof DOMException && e.name === 'AbortError') || signal.aborted) return 'paused';
     if (e instanceof QuotaError) return end('quota', KO.quota);
     if (e instanceof AuthError) return end('auth', KO.auth);
-    return end('stopped', KO.error);
+    if (e instanceof FatalApiError) return end('error', KO.fatal);
+    if (e instanceof TooManyBad) return end('error', KO.badRepeated);
+    return end('error', KO.error);
   }
 }

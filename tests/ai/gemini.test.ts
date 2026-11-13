@@ -1,5 +1,5 @@
 import { sendTurn } from '../../src/ai/gemini';
-import { AuthError, QuotaError, NetworkError, BadResponseError } from '../../src/ai/errors';
+import { AuthError, QuotaError, NetworkError, BadResponseError, RateLimitError, FatalApiError } from '../../src/ai/errors';
 import { SCENARIOS } from '../../src/scenarios';
 import { CONFIG } from '../../src/config';
 import type { TurnRequest } from '../../src/ai/prompt';
@@ -35,8 +35,49 @@ test('maps other 400 to BadResponseError', async () => {
   await expect(sendTurn(req, 'K', status(400, '{"error":{"message":"bad audio"}}'))).rejects.toBeInstanceOf(BadResponseError);
 });
 
-test('maps 429 to QuotaError', async () => {
-  await expect(sendTurn(req, 'K', status(429))).rejects.toBeInstanceOf(QuotaError);
+test('maps daily 429 to QuotaError', async () => {
+  const body = JSON.stringify({ error: { status: 'RESOURCE_EXHAUSTED', details: [{ violations: [{ quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' }] }] } });
+  await expect(sendTurn(req, 'K', status(429, body))).rejects.toBeInstanceOf(QuotaError);
+});
+
+test('maps per-minute 429 to RateLimitError with retry delay', async () => {
+  const body = JSON.stringify({ error: { details: [
+    { violations: [{ quotaId: 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier' }] },
+    { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '17s' },
+  ] } });
+  const err = await sendTurn(req, 'K', status(429, body)).catch((e) => e);
+  expect(err).toBeInstanceOf(RateLimitError);
+  expect(err.retryAfterMs).toBe(17000);
+});
+
+test('maps unknown 429 to RateLimitError', async () => {
+  await expect(sendTurn(req, 'K', status(429))).rejects.toBeInstanceOf(RateLimitError);
+});
+
+test('maps 404 (model gone) to FatalApiError', async () => {
+  await expect(sendTurn(req, 'K', status(404, '{"error":{"message":"models/x is not found"}}'))).rejects.toBeInstanceOf(FatalApiError);
+});
+
+test('passes an abort signal with a timeout to fetch', async () => {
+  const f = vi.fn().mockResolvedValue(ok({ transcript: 'a', aiLine: 'b' }));
+  await sendTurn(req, 'K', f);
+  expect(f.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+});
+
+test('aborting the caller signal rejects with NetworkError', async () => {
+  const ctrl = new AbortController();
+  const f = vi.fn((_u: string, init: RequestInit) => new Promise<Response>((_r, rej) => {
+    init.signal!.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')));
+  }));
+  const p = sendTurn(req, 'K', f as unknown as typeof fetch, ctrl.signal);
+  ctrl.abort();
+  await expect(p).rejects.toBeInstanceOf(NetworkError);
+});
+
+test('disables thinking to keep latency low', async () => {
+  const f = vi.fn().mockResolvedValue(ok({ transcript: 'a', aiLine: 'b' }));
+  await sendTurn(req, 'K', f);
+  expect(JSON.parse(f.mock.calls[0][1].body).generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
 });
 
 test('maps 5xx to NetworkError (retryable)', async () => {

@@ -131,6 +131,52 @@ test.each([
   expect(released).toBe(1);
 });
 
+test('loop end error shows a problem message', async () => {
+  loopResult = 'error';
+  await renderCarMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  expect(root().textContent).toContain('문제가 생겨서 연습을 마쳤어요.');
+});
+
+test('passes saved voice rate and keeps the same conversation state across resumes', async () => {
+  await db.setSetting('ttsRate', 0.8);
+  await renderCarMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  expect(loopCalls[0].ctx.rate).toBe(0.8);
+  expect(loopCalls[0].ctx.state).toBeDefined();
+  setVisibility('hidden');
+  await flush();
+  setVisibility('visible');
+  await flush();
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  expect(loopCalls[1].ctx.state).toBe(loopCalls[0].ctx.state);
+});
+
+test('failed wake lock request shows and speaks the warning', async () => {
+  await renderCarMode(
+    root(),
+    { ...deps, wakeLock: { request: async () => { throw new Error('NotAllowed'); } } },
+    scenario,
+  );
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  expect(root().textContent).toContain(NO_WAKELOCK_WARN);
+  expect(deps.speak).toHaveBeenCalledWith(NO_WAKELOCK_WARN, expect.objectContaining({ lang: 'ko-KR' }));
+});
+
+test('leaving the page during the loop does not overwrite the new page', async () => {
+  await renderCarMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  root().replaceChildren(document.createTextNode('OTHER PAGE'));
+  await flush();
+  expect(root().textContent).toBe('OTHER PAGE');
+});
+
 test('mic permission failure shows message', async () => {
   await renderCarMode(root(), { ...deps, mic: async () => { throw new Error('denied'); } }, scenario);
   q<HTMLButtonElement>('button.car-start')!.click();

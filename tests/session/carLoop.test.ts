@@ -1,8 +1,8 @@
-import { runCarLoop, type LoopDeps } from '../../src/session/carLoop';
+import { runCarLoop, createLoopState, type LoopDeps } from '../../src/session/carLoop';
 import { KO, EN_RETRY } from '../../src/session/phrases';
 import { SCENARIOS, nextScenario } from '../../src/scenarios';
 import { CONFIG } from '../../src/config';
-import { AuthError, BadResponseError, NetworkError, QuotaError } from '../../src/ai/errors';
+import { AuthError, BadResponseError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../../src/ai/errors';
 import type { TurnResult } from '../../src/ai/schema';
 import type { TurnRequest } from '../../src/ai/prompt';
 
@@ -21,15 +21,17 @@ function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number } 
   const turns: any[] = [];
   const ended: string[] = [];
   const sleeps: number[] = [];
+  const listenIdleMs: number[] = [];
   let listens = opts.utterances ?? steps.length;
   let idle = opts.idleCalls ?? 0;
   const queue = [...steps];
   let id = 0;
   const deps: LoopDeps = {
-    async listen({ onIdle }) {
-      while (idle > 0) {
+    async listen({ idleMs }) {
+      listenIdleMs.push(idleMs);
+      if (idle > 0) {
         idle--;
-        onIdle();
+        return 'idle';
       }
       if (listens-- <= 0) {
         ctrl.abort();
@@ -62,7 +64,7 @@ function setup(steps: Step[], opts: { idleCalls?: number; utterances?: number } 
     newId: () => `id${id++}`,
   };
   const run = () => runCarLoop(deps, { sessionId: 'S', scenario, weakPhrases: [{ original: 'a', better: 'b' }] }, ctrl.signal);
-  return { run, spoken, sent, turns, ended, sleeps, ctrl };
+  return { run, spoken, sent, turns, ended, sleeps, ctrl, listenIdleMs, deps };
 }
 
 const texts = (s: { text: string }[]) => s.map((x) => x.text);
@@ -152,10 +154,81 @@ test('empty transcript is ignored', async () => {
   expect(t.turns).toHaveLength(0);
 });
 
-test('idle prompt is spoken once per silent stretch', async () => {
+test('idle prompt is spoken once per silent stretch, with the mic stopped', async () => {
   const t = setup([res()], { idleCalls: 2 });
   await t.run();
   expect(texts(t.spoken).filter((x) => x === KO.idle)).toHaveLength(1);
+  // first listen waits for idle; after prompting, keep listening without another idle timeout
+  expect(t.listenIdleMs[0]).toBe(CONFIG.idlePromptMs);
+  expect(t.listenIdleMs[1]).toBe(0);
+  expect(t.listenIdleMs[2]).toBe(0);
+  // after a real turn the idle timer is armed again
+  expect(t.listenIdleMs[3]).toBe(CONFIG.idlePromptMs);
+});
+
+test('model gone (FatalApiError) ends loop with spoken notice', async () => {
+  const t = setup([new FatalApiError('404')]);
+  expect(await t.run()).toBe('error');
+  expect(t.spoken.at(-1)).toMatchObject({ text: KO.fatal, lang: 'ko-KR' });
+  expect(t.ended).toEqual(['S']);
+});
+
+test('repeated bad responses end the loop instead of apologising forever', async () => {
+  const bad = () => new BadResponseError('x');
+  const t = setup([bad(), bad(), bad(), res()]);
+  expect(await t.run()).toBe('error');
+  expect(texts(t.spoken).filter((x) => x === EN_RETRY)).toHaveLength(2);
+  expect(t.spoken.at(-1)).toMatchObject({ text: KO.badRepeated, lang: 'ko-KR' });
+});
+
+test('a good reply resets the bad-response counter', async () => {
+  const bad = () => new BadResponseError('x');
+  const t = setup([bad(), bad(), res(), bad(), bad(), res()]);
+  await t.run();
+  expect(t.ended).toEqual([]);
+});
+
+test('per-minute rate limit waits silently and resends the same audio', async () => {
+  const t = setup([new RateLimitError('x', 7000), res()], { utterances: 1 });
+  await t.run();
+  expect(t.sleeps).toEqual([7000]);
+  expect(t.sent).toHaveLength(2);
+  expect(texts(t.spoken)).not.toContain(KO.offline);
+  expect(texts(t.spoken).at(-1)).toBe('Great, your name please?');
+});
+
+test('rate limit that never clears ends as quota', async () => {
+  const errs = Array.from({ length: CONFIG.maxRateLimitRetries + 1 }, () => new RateLimitError('x'));
+  const t = setup(errs, { utterances: 1 });
+  expect(await t.run()).toBe('quota');
+  expect(t.sleeps.every((ms) => ms === 10000)).toBe(true);
+});
+
+test('send receives the loop abort signal', async () => {
+  const t = setup([res()]);
+  const send = vi.spyOn(t.deps, 'send');
+  await t.run();
+  expect(send.mock.calls[0][1]).toBe(t.ctrl.signal);
+});
+
+test('uses the configured voice rate', async () => {
+  const t = setup([]);
+  await runCarLoop(t.deps, { sessionId: 'S', scenario, weakPhrases: [], rate: 0.8 }, t.ctrl.signal);
+  expect(t.spoken[0].rate).toBe(0.8);
+});
+
+test('resuming with the same state continues instead of restarting', async () => {
+  const state = createLoopState(scenario, CONFIG.ttsRate.normal);
+  const a = setup([res(), res({ command: 'next', aiLine: 'OK' })]);
+  await runCarLoop(a.deps, { sessionId: 'S', scenario, weakPhrases: [], state }, a.ctrl.signal);
+  const b = setup([res({ transcript: 'Hi', aiLine: 'Hello' })]);
+  await runCarLoop(b.deps, { sessionId: 'S', scenario, weakPhrases: [], state }, b.ctrl.signal);
+  const nxt = nextScenario(scenario);
+  // no opening line again; same (next) scenario; history kept; idx continues
+  expect(texts(b.spoken)).toEqual(['Hello']);
+  expect(b.sent[0].scenario).toBe(nxt);
+  expect(b.sent[0].history).toEqual([{ role: 'ai', text: nxt.openingLine }]);
+  expect(b.turns[0].idx).toBe(1);
 });
 
 test('bad response asks to repeat', async () => {
@@ -215,8 +288,18 @@ test('history passed to send contains prior transcripts and aiLines', async () =
   expect(t.turns.map((x) => x.idx)).toEqual([0, 1]);
 });
 
-test('unexpected error ends loop as stopped-with-error safely', async () => {
+test('unexpected error ends loop with spoken error notice', async () => {
   const t = setup([new Error('boom')]);
-  expect(await t.run()).toBe('stopped');
+  expect(await t.run()).toBe('error');
+  expect(t.spoken.at(-1)).toMatchObject({ text: KO.error });
   expect(t.ended).toEqual(['S']);
+});
+
+test('listen rejected with AbortError (audio interrupted) pauses even without signal abort', async () => {
+  const t = setup([]);
+  t.deps.listen = async () => {
+    throw new DOMException('interrupted', 'AbortError');
+  };
+  expect(await t.run()).toBe('paused');
+  expect(t.ended).toEqual([]);
 });

@@ -57,6 +57,14 @@ test('better phrase has a listen button that speaks it in en-US', async () => {
   expect(speak).toHaveBeenCalledWith('I have a reservation', expect.objectContaining({ lang: 'en-US' }));
 });
 
+test('listen button uses the saved voice rate', async () => {
+  await seed();
+  await db.setSetting('ttsRate', 0.75);
+  await renderReview(root(), { db, speak }, 'new');
+  byText('듣기')!.click();
+  expect(speak).toHaveBeenCalledWith('I have a reservation', { lang: 'en-US', rate: 0.75 });
+});
+
 test('자주 틀린 표현 tab lists top weak phrases with counts', async () => {
   await seed();
   await db.addTurn({

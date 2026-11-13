@@ -2,7 +2,7 @@ import { CONFIG } from '../config';
 import type { Mic } from '../audio/mic';
 import type { SpeakOpts } from '../audio/speaker';
 import { encodeWav } from '../audio/wav';
-import { AuthError, BadResponseError, NetworkError, QuotaError } from '../ai/errors';
+import { AuthError, BadResponseError, FatalApiError, NetworkError, QuotaError, RateLimitError } from '../ai/errors';
 import type { HistoryItem, TurnRequest } from '../ai/prompt';
 import type { TurnResult } from '../ai/schema';
 import { nextScenario, type Scenario } from '../scenarios';
@@ -16,6 +16,7 @@ export interface HomeModeDeps {
   send: (req: TurnRequest, apiKey: string) => Promise<TurnResult>;
   speak: (text: string, opts: SpeakOpts) => Promise<void>;
   unlock: () => void;
+  stopSpeaking?: () => void;
 }
 
 type Level = 1 | 2 | 3;
@@ -31,12 +32,15 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
   const apiKey = (await deps.db.getSetting<string>('apiKey')) ?? '';
   let rate = (await deps.db.getSetting<number>('ttsRate')) ?? CONFIG.ttsRate.normal;
   const sessionId = newId();
-  await deps.db.startSession({ id: sessionId, scenarioId: scenario.id, mode: 'home', startedAt: Date.now() });
+  const startedAt = Date.now();
+  let started = false; // session is saved only once the first turn exists
 
   let level: Level = 2;
   let mic: Mic | null = null;
   let busy = false;
   let blocked = false;
+  let ended = false;
+  let listenCtrl: AbortController | null = null;
   let idx = 0;
   const history: HistoryItem[] = [{ role: 'ai', text: scenario.openingLine }];
   const turns: TurnRec[] = [];
@@ -67,7 +71,8 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
     if (level !== 2) hintBtn.remove();
     else if (!hintBtn.isConnected) micBtn.before(hintBtn);
     hintBox.hidden = true;
-    micBtn.disabled = busy || blocked || (level === 1 && !textArea.value.trim());
+    micBtn.textContent = listenCtrl ? '■ 그만 듣기' : '🎤 말하기';
+    micBtn.disabled = listenCtrl ? false : busy || blocked || (level === 1 && !textArea.value.trim());
   };
 
   for (const { level: lv, label } of LEVELS) {
@@ -111,14 +116,26 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
   };
 
   const onMic = async () => {
+    if (listenCtrl) {
+      listenCtrl.abort(); // second tap while listening = cancel
+      return;
+    }
     if (busy || blocked) return;
     deps.unlock();
+    deps.stopSpeaking?.();
     busy = true;
+    listenCtrl = new AbortController();
     refresh();
     setStatus('듣는 중… 말을 마치면 잠시 기다려 주세요.');
     try {
       mic ??= await deps.mic();
-      const audio = await mic.listen();
+      const audio = await mic.listen({ signal: listenCtrl.signal });
+      listenCtrl = null;
+      refresh();
+      if (audio === 'idle') {
+        setStatus('');
+        return;
+      }
       setStatus('생각 중…');
       const typed = level === 1 ? textArea.value.trim() : undefined;
       const r = await deps.send(
@@ -142,6 +159,10 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
         correction: r.correction, pronunciation: r.pronunciation,
       };
       turns.push(turn);
+      if (!started) {
+        started = true;
+        await deps.db.startSession({ id: sessionId, scenarioId: scenario.id, mode: 'home', startedAt });
+      }
       await deps.db.addTurn(turn);
       history.push({ role: 'user', text: r.transcript }, { role: 'ai', text: r.aiLine });
       last = { aiLine: r.aiLine, aiLineKo: r.aiLineKo, suggestedReply: r.suggestedReply };
@@ -155,7 +176,13 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       setStatus('');
       await say(r.aiLine);
     } catch (e) {
-      if (e instanceof AuthError) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setStatus('');
+      } else if (e instanceof RateLimitError) {
+        setStatus(h('span', { className: 'error' }, '요청이 많아요. 잠시 후에 다시 눌러 주세요.'));
+      } else if (e instanceof FatalApiError) {
+        setStatus(h('span', { className: 'error' }, '앱 설정에 문제가 있어요. AI 모델 설정을 확인해 주세요.'));
+      } else if (e instanceof AuthError) {
         setStatus(h('span', { className: 'error' }, 'API 키에 문제가 있어요. ', h('a', { href: routeToHash({ name: 'settings' }) }, '설정에서 확인하기')));
       } else if (e instanceof QuotaError) {
         blocked = true;
@@ -168,16 +195,26 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
         setStatus(h('span', { className: 'error' }, `문제가 생겼어요: ${(e as Error).message ?? e}`));
       }
     } finally {
+      listenCtrl = null;
       busy = false;
       refresh();
     }
   };
   micBtn.addEventListener('click', () => void onMic());
 
-  const finish = async () => {
+  const release = async () => {
+    listenCtrl?.abort();
     mic?.close();
     mic = null;
-    await deps.db.endSession(sessionId, Date.now());
+    if (!ended) {
+      ended = true;
+      if (started) await deps.db.endSession(sessionId, Date.now());
+    }
+  };
+  window.addEventListener('hashchange', () => void release(), { once: true });
+
+  const finish = async () => {
+    await release();
     const items = turns.filter((t) => t.correction || t.pronunciation);
     mount(
       root,

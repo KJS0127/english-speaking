@@ -75,7 +75,21 @@ $('start').addEventListener('click', async () => {
   await speak(scenario.openingLine, { lang: 'en-US', rate: CONFIG.ttsRate.normal });
   for (;;) {
     log('듣는 중…');
-    const audio = await mic.listen({ idleMs: 20000, onIdle: () => log('20초 동안 조용함') });
+    let audio: Float32Array | 'idle';
+    try {
+      audio = await mic.listen({ idleMs: 20000 });
+    } catch (e) {
+      state.errors++;
+      log(`듣기 중단됨 (전화·Siri 등 오디오 끊김?): ${(e as Error).message}`);
+      render();
+      ($('start') as HTMLButtonElement).disabled = false;
+      return;
+    }
+    if (audio === 'idle') {
+      log('20초 동안 조용함 → 안내 음성 재생 (마이크 꺼진 상태)');
+      await speak('계속할까요?', { lang: 'ko-KR', rate: CONFIG.ttsRate.normal });
+      continue;
+    }
     const wav = encodeWav(audio, CONFIG.sampleRate);
     log(`녹음 ${(audio.length / CONFIG.sampleRate).toFixed(1)}초 → 전송`);
     const t0 = performance.now();

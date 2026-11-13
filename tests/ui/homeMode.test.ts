@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { openDb, type Db } from '../../src/store/db';
 import { renderHomeMode, type HomeModeDeps } from '../../src/ui/homeMode';
 import { SCENARIOS } from '../../src/scenarios';
-import { AuthError, QuotaError } from '../../src/ai/errors';
+import { AuthError, QuotaError, RateLimitError } from '../../src/ai/errors';
 import type { TurnResult } from '../../src/ai/schema';
 
 let n = 0;
@@ -41,6 +41,13 @@ async function talk() {
   q<HTMLButtonElement>('button.mic').click();
   await flush();
 }
+
+test('opening and leaving without speaking leaves no empty session', async () => {
+  await renderHomeMode(root(), deps, scenario);
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  await flush();
+  expect(await db.listSessions()).toHaveLength(0);
+});
 
 test('level selector offers 쓰고 말하기 / 힌트 보고 말하기 / 바로 말하기', async () => {
   await renderHomeMode(root(), deps, scenario);
@@ -123,7 +130,7 @@ test('empty transcript asks to say again and saves nothing', async () => {
   await renderHomeMode(root(), deps, scenario);
   await talk();
   expect(q('.status').textContent).toBe('잘 못 들었어요. 다시 말해 주세요.');
-  expect(await db.getTurns((await db.listSessions())[0].id)).toHaveLength(0);
+  expect(await db.listSessions()).toHaveLength(0);
 });
 
 test('AuthError shows message with link to settings', async () => {
@@ -132,6 +139,43 @@ test('AuthError shows message with link to settings', async () => {
   await talk();
   expect(q('.status').textContent).toContain('API 키에 문제가 있어요');
   expect(q('.status a[href="#/settings"]')).not.toBeNull();
+});
+
+test('RateLimitError asks to wait and keeps mic enabled', async () => {
+  send.mockRejectedValue(new RateLimitError('x', 5000));
+  await renderHomeMode(root(), deps, scenario);
+  await talk();
+  expect(q('.status').textContent).toContain('잠시 후에 다시 눌러 주세요');
+  expect(q<HTMLButtonElement>('button.mic').disabled).toBe(false);
+});
+
+test('tapping the mic button while listening cancels listening', async () => {
+  let closed = 0;
+  deps.mic = async () => ({
+    listen: ({ signal }: { signal?: AbortSignal } = {}) =>
+      new Promise((_r, rej) => signal?.addEventListener('abort', () => rej(new DOMException('a', 'AbortError')))),
+    close() { closed++; },
+  });
+  await renderHomeMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.mic').click();
+  await flush();
+  expect(q('button.mic').textContent).toBe('■ 그만 듣기');
+  q<HTMLButtonElement>('button.mic').click();
+  await flush();
+  expect(q('button.mic').textContent).toBe('🎤 말하기');
+  expect(send).not.toHaveBeenCalled();
+  expect(q('.status').textContent).toBe('');
+});
+
+test('leaving the page closes the mic and ends the session', async () => {
+  let closed = 0;
+  deps.mic = async () => ({ listen: async () => new Float32Array([0.1]), close() { closed++; } });
+  await renderHomeMode(root(), deps, scenario);
+  await talk();
+  window.dispatchEvent(new HashChangeEvent('hashchange'));
+  await flush();
+  expect(closed).toBe(1);
+  expect((await db.listSessions())[0].endedAt).not.toBeNull();
 });
 
 test('QuotaError shows 오늘 무료 사용량이 끝났어요 and disables mic', async () => {

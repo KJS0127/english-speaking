@@ -17,8 +17,9 @@ const fmtDate = (ms: number) => {
 const title = (s: SessionRec) => findScenario(s.scenarioId)?.titleKo ?? s.scenarioId;
 
 export async function renderReview(root: HTMLElement, deps: ReviewDeps, sessionId?: string): Promise<void> {
+  const rate = (await deps.db.getSetting<number>('ttsRate')) ?? CONFIG.ttsRate.normal;
   const listen = (text: string) =>
-    h('button', { type: 'button', onclick: () => void deps.speak(text, { lang: 'en-US', rate: CONFIG.ttsRate.normal }) }, '듣기');
+    h('button', { type: 'button', onclick: () => void deps.speak(text, { lang: 'en-US', rate }) }, '듣기');
 
   if (sessionId) {
     const session = (await deps.db.listSessions()).find((s) => s.id === sessionId);

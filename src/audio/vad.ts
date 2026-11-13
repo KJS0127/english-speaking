@@ -5,28 +5,67 @@ export interface VadOpts {
   silenceMs: number;
   minSpeechMs: number;
   maxUtteranceMs: number;
+  /** Frames at the start used only to measure background noise (default 0). */
+  calibrationFrames?: number;
+  /** Consecutive loud frames required before speech starts (default 1). */
+  startFrames?: number;
+  /** Voice must be this many times the measured noise floor (default 0 = off). */
+  floorFactor?: number;
 }
 
 export function createSilenceDetector(opts: VadOpts) {
+  const calFrames = opts.calibrationFrames ?? 0;
+  const startFrames = Math.max(1, opts.startFrames ?? 1);
+  const factor = opts.floorFactor ?? 0;
+
+  let calibrated = 0;
+  let calSum = 0;
+  let floor = 0;
   let inSpeech = false;
+  let loudRun = 0;
+  let pendingMs = 0;
   let speechMs = 0; // loud time inside the current utterance
   let totalMs = 0; // total time since speech-start
   let silentMs = 0;
 
-  const reset = () => {
+  const threshold = () => Math.max(opts.rmsThreshold, floor * factor);
+
+  const endUtterance = () => {
     inSpeech = false;
+    loudRun = 0;
+    pendingMs = 0;
     speechMs = 0;
     totalMs = 0;
     silentMs = 0;
   };
 
+  const reset = () => {
+    endUtterance();
+    calibrated = 0;
+    calSum = 0;
+    floor = 0;
+  };
+
   const push = (level: number, frameMs: number): VadEvent => {
-    const loud = level >= opts.rmsThreshold;
+    if (calibrated < calFrames) {
+      calibrated++;
+      calSum += level;
+      floor = calSum / calibrated;
+      return null;
+    }
+    const loud = level >= threshold();
     if (!inSpeech) {
-      if (!loud) return null;
+      if (!loud) {
+        loudRun = 0;
+        pendingMs = 0;
+        return null;
+      }
+      loudRun++;
+      pendingMs += frameMs;
+      if (loudRun < startFrames) return null;
       inSpeech = true;
-      speechMs = frameMs;
-      totalMs = frameMs;
+      speechMs = pendingMs;
+      totalMs = pendingMs;
       silentMs = 0;
       return 'speech-start';
     }
@@ -38,16 +77,16 @@ export function createSilenceDetector(opts: VadOpts) {
       silentMs += frameMs;
     }
     if (totalMs >= opts.maxUtteranceMs) {
-      reset();
+      endUtterance();
       return 'speech-end';
     }
     if (silentMs >= opts.silenceMs) {
       const real = speechMs >= opts.minSpeechMs;
-      reset();
+      endUtterance();
       return real ? 'speech-end' : null;
     }
     return null;
   };
 
-  return { push, reset, active: () => inSpeech };
+  return { push, reset, active: () => inSpeech, starting: () => !inSpeech && loudRun > 0 };
 }

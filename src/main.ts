@@ -1,6 +1,6 @@
 import './style.css';
 import { openMic } from './audio/mic';
-import { speak, unlockSpeech } from './audio/speaker';
+import { speak, stopSpeaking, unlockSpeech } from './audio/speaker';
 import { sendTurn } from './ai/gemini';
 import { findScenario } from './scenarios';
 import { openDb } from './store/db';
@@ -14,7 +14,8 @@ import { renderSettings } from './ui/settings';
 async function boot() {
   const root = document.getElementById('app')!;
   const db = await openDb();
-  const send = (req: Parameters<typeof sendTurn>[0], key: string) => sendTurn(req, key);
+  const send = (req: Parameters<typeof sendTurn>[0], key: string, signal?: AbortSignal) =>
+    sendTurn(req, key, fetch, signal);
   const wakeLock = 'wakeLock' in navigator ? (navigator as any).wakeLock : undefined;
 
   onRoute((r) => {
@@ -28,9 +29,9 @@ async function boot() {
         const scenario = findScenario(r.scenarioId);
         if (!scenario) return navigate({ name: 'home' });
         if (r.name === 'homeMode') {
-          void renderHomeMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech }, scenario);
+          void renderHomeMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, stopSpeaking }, scenario);
         } else {
-          void renderCarMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, wakeLock }, scenario);
+          void renderCarMode(root, { db, mic: openMic, send, speak, unlock: unlockSpeech, stopSpeaking, wakeLock }, scenario);
         }
         break;
       }

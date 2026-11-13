@@ -30,6 +30,29 @@ test('forces speech-end at maxUtteranceMs', () => {
   expect(events.slice(1, 299)).not.toContain('speech-end');
 });
 
+const carOpts = { ...opts, calibrationFrames: 4, startFrames: 2, floorFactor: 2.5 };
+
+test('steady road noise above the base threshold never starts speech', () => {
+  const d = createSilenceDetector(carOpts);
+  expect(feed(d, 0.03, 200)).not.toContain('speech-start');
+});
+
+test('speech louder than the calibrated noise floor is detected', () => {
+  const d = createSilenceDetector(carOpts);
+  feed(d, 0.03, 4); // calibration
+  const ev = feed(d, 0.2, 5);
+  expect(ev).toContain('speech-start');
+  expect(feed(d, 0.03, 12)[11]).toBe('speech-end');
+});
+
+test('isolated loud ticks (turn signal) never start speech', () => {
+  const d = createSilenceDetector(carOpts);
+  feed(d, 0, 4);
+  const ev: VadEvent[] = [];
+  for (let i = 0; i < 50; i++) ev.push(d.push(0.3, 100), d.push(0, 100), d.push(0, 100));
+  expect(ev).not.toContain('speech-start');
+});
+
 test('reset clears state', () => {
   const d = createSilenceDetector(opts);
   feed(d, 0.1, 5);

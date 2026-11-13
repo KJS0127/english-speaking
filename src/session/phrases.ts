@@ -8,6 +8,8 @@ export const KO = {
   quota: '오늘 무료 사용량이 끝났어요. 연습을 마칠게요.',
   auth: 'API 키에 문제가 있어요. 집에서 설정을 확인해 주세요.',
   error: '문제가 생겨서 연습을 마칠게요.',
+  fatal: '앱 설정에 문제가 있어서 연습을 마칠게요. 집에서 확인해 주세요.',
+  badRepeated: '계속 잘 알아듣지 못해서 연습을 마칠게요.',
 } as const;
 
 export const EN_RETRY = 'Sorry, could you say that again?';
