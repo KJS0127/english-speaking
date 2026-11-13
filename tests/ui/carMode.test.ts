@@ -177,6 +177,21 @@ test('leaving the page during the loop does not overwrite the new page', async (
   expect(root().textContent).toBe('OTHER PAGE');
 });
 
+test('quit button on the running screen ends the session and goes home', async () => {
+  location.hash = '#/car/' + scenario.id;
+  await renderCarMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.car-start')!.click();
+  await flush();
+  const quit = q<HTMLButtonElement>('button.car-quit')!;
+  expect(quit.textContent).toBe('그만하고 홈으로');
+  quit.click();
+  await flush();
+  expect(loopCalls[0].signal.aborted).toBe(true);
+  expect((await db.listSessions())[0].endedAt).not.toBeNull();
+  expect(location.hash).toBe('#/');
+  expect(released).toBe(1);
+});
+
 test('mic permission failure shows message', async () => {
   await renderCarMode(root(), { ...deps, mic: async () => { throw new Error('denied'); } }, scenario);
   q<HTMLButtonElement>('button.car-start')!.click();

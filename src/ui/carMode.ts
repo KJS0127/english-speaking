@@ -7,6 +7,7 @@ import type { Scenario } from '../scenarios';
 import { createLoopState, runCarLoop, type LoopEnd, type LoopState } from '../session/carLoop';
 import type { Db } from '../store/db';
 import { h, mount } from './dom';
+import { navigate } from './router';
 
 export const SAFETY_NOTE = '출발 전에 시작을 눌러 주세요. 운전 중에는 화면을 보지 마세요.';
 export const NO_WAKELOCK_WARN = '이 기기에서는 화면 켜짐 유지가 안 돼요. 화면 자동 잠금을 꺼 주세요.';
@@ -46,6 +47,7 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
   let ctrl: AbortController | null = null;
   let running = false;
   let left = false; // user navigated away from this page
+  let quitting = false;
 
   const stateEl = h('div', { className: 'state', 'aria-live': 'polite' });
   const warnEl = h('p', { className: 'note warn', hidden: true }, NO_WAKELOCK_WARN);
@@ -121,7 +123,12 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
     const weakPhrases = (await deps.db.topWeakPhrases(5)).map((w) => ({ original: w.original, better: w.better }));
     ctrl = new AbortController();
     warnEl.hidden = locked || !deps.wakeLock;
-    screen(stateEl, warnEl, h('p', { className: 'note' }, '말로만 조작해요: 다시 · 천천히 · 한국어로 · 힌트 · 다음 · 그만'));
+    screen(
+      stateEl,
+      warnEl,
+      h('p', { className: 'note' }, '말로만 조작해요: 다시 · 천천히 · 한국어로 · 힌트 · 다음 · 그만'),
+      h('button', { className: 'car-quit', type: 'button', onclick: () => quit() }, '그만하고 홈으로'),
+    );
     setState('준비 중');
     if (!locked && deps.wakeLock) await koSay(NO_WAKELOCK_WARN).catch(() => {});
     const m = mic;
@@ -155,6 +162,13 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
     running = false;
     ctrl = null;
     await releaseLock();
+    if (quitting) {
+      mic?.close();
+      mic = null;
+      await deps.db.endSession(sessionId!, Date.now()).catch(() => {});
+      navigate({ name: 'home' });
+      return;
+    }
     if (end === 'paused') {
       showStart('이어하기');
     } else {
@@ -167,6 +181,11 @@ export async function renderCarMode(root: HTMLElement, deps: CarModeDeps, scenar
   const pause = () => {
     ctrl?.abort();
     deps.stopSpeaking?.();
+  };
+  // Screen button for when parked: stop, save, go home (start() finishes the job once the loop stops).
+  const quit = () => {
+    quitting = true;
+    pause();
   };
   const onVisibility = () => {
     if (left) return;
