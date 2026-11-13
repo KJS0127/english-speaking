@@ -63,7 +63,7 @@ test('exportBackup excludes settings', async () => {
   await db.startSession({ id: 'a', scenarioId: 'x', mode: 'home', startedAt: 1 });
   const json = await db.exportBackup();
   expect(json).not.toContain('SECRET-KEY');
-  expect(JSON.parse(json).version).toBe(1);
+  expect(JSON.parse(json).version).toBe(2);
 });
 
 test('export then import into fresh db restores sessions, turns, weakPhrases', async () => {
@@ -84,9 +84,56 @@ test('importBackup with invalid file keeps existing data', async () => {
   await db.startSession({ id: 'keep', scenarioId: 'x', mode: 'home', startedAt: 1 });
   await expect(db.importBackup('{"version":1,"sessions":"x"}')).rejects.toBeInstanceOf(BackupError);
   await expect(db.importBackup('not json')).rejects.toBeInstanceOf(BackupError);
-  await expect(db.importBackup('{"version":2,"sessions":[],"turns":[],"weakPhrases":[]}')).rejects.toBeInstanceOf(BackupError);
+  await expect(db.importBackup('{"version":3,"sessions":[],"turns":[],"weakPhrases":[]}')).rejects.toBeInstanceOf(BackupError);
   await expect(
     db.importBackup('{"version":1,"sessions":[{"id":1}],"turns":[],"weakPhrases":[]}'),
   ).rejects.toBeInstanceOf(BackupError);
   expect((await db.listSessions()).map((s) => s.id)).toEqual(['keep']);
+});
+
+test('getProgress returns level 1 default for unknown scenario', async () => {
+  const db = await fresh();
+  expect(await db.getProgress('cafe-order')).toEqual({ scenarioId: 'cafe-order', level: 1, failStreak: 0, recentMissions: [] });
+});
+
+test('saveProgress round-trips and listProgress lists it', async () => {
+  const db = await fresh();
+  const p = { scenarioId: 'cafe-order', level: 3, failStreak: 1, recentMissions: ['A', 'B'] };
+  await db.saveProgress(p);
+  expect(await db.getProgress('cafe-order')).toEqual(p);
+  expect(await db.listProgress()).toEqual([p]);
+});
+
+test('updateSession patches mission fields', async () => {
+  const db = await fresh();
+  await db.startSession({ id: 's', scenarioId: 'x', mode: 'car', startedAt: 1, missionTitle: 'M', goals: ['g1'], difficulty: 2 });
+  await db.updateSession('s', { achieved: true });
+  const s = (await db.listSessions())[0];
+  expect(s).toMatchObject({ missionTitle: 'M', goals: ['g1'], difficulty: 2, achieved: true, endedAt: null });
+});
+
+test('export includes progress as version 2 and import restores it', async () => {
+  const a = await fresh();
+  await a.saveProgress({ scenarioId: 'x', level: 4, failStreak: 0, recentMissions: [] });
+  const json = await a.exportBackup();
+  expect(JSON.parse(json).version).toBe(2);
+  const b = await fresh();
+  await b.importBackup(json);
+  expect((await b.getProgress('x')).level).toBe(4);
+});
+
+test('imports version 1 backup (no progress)', async () => {
+  const db = await fresh();
+  await db.saveProgress({ scenarioId: 'x', level: 4, failStreak: 0, recentMissions: [] });
+  await db.importBackup('{"version":1,"sessions":[],"turns":[],"weakPhrases":[]}');
+  expect((await db.getProgress('x')).level).toBe(1);
+});
+
+test('rejects bad progress record and keeps data', async () => {
+  const db = await fresh();
+  await db.saveProgress({ scenarioId: 'x', level: 4, failStreak: 0, recentMissions: [] });
+  await expect(
+    db.importBackup('{"version":2,"sessions":[],"turns":[],"weakPhrases":[],"progress":[{"scenarioId":"x","level":"high"}]}'),
+  ).rejects.toBeInstanceOf(BackupError);
+  expect((await db.getProgress('x')).level).toBe(4);
 });
