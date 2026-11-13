@@ -90,3 +90,42 @@ test('abort signal rejects with AbortError', async () => {
   ctrl.abort();
   await expect(p).rejects.toMatchObject({ name: 'AbortError' });
 });
+
+test('finish signal resolves with everything recorded so far, even if speech was not detected', async () => {
+  const mic = await openMic();
+  const finish = new AbortController();
+  const p = mic.listen({ finish: finish.signal });
+  for (let i = 0; i < 6; i++) {
+    frame(0.01); // too quiet for the detector
+    await vi.advanceTimersByTimeAsync(256);
+  }
+  finish.abort();
+  const out = await p;
+  expect(out).toBeInstanceOf(Float32Array);
+  expect((out as Float32Array).length).toBe(6 * 4096);
+});
+
+test('finish signal with almost nothing recorded rejects with AbortError', async () => {
+  const mic = await openMic();
+  const finish = new AbortController();
+  const p = mic.listen({ finish: finish.signal });
+  finish.abort();
+  await expect(p).rejects.toMatchObject({ name: 'AbortError' });
+});
+
+test('silenceMs option lengthens the pause allowed inside an utterance', async () => {
+  const mic = await openMic();
+  let done = false;
+  const p = mic.listen({ silenceMs: 2000 }).then((r) => {
+    done = true;
+    return r;
+  });
+  for (let i = 0; i < 6; i++) frame(0.3); // speech (after 4 calibration frames)
+  for (let i = 0; i < 6; i++) frame(0); // 1.5s pause: not the end yet
+  await vi.advanceTimersByTimeAsync(10);
+  expect(done).toBe(false);
+  for (let i = 0; i < 3; i++) frame(0); // > 2s silence
+  await vi.advanceTimersByTimeAsync(10);
+  expect(done).toBe(true);
+  await p;
+});

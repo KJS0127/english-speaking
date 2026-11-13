@@ -6,6 +6,10 @@ export interface ListenOpts {
   signal?: AbortSignal;
   /** Resolve with 'idle' after this much silence (0/undefined = never). */
   idleMs?: number;
+  /** When aborted, resolve right away with everything recorded so far (manual "done talking"). */
+  finish?: AbortSignal;
+  /** Pause length that ends an utterance (default CONFIG.vad.silenceMs). */
+  silenceMs?: number;
   onSpeechStart?: () => void;
 }
 
@@ -61,7 +65,13 @@ export async function openMic(): Promise<Mic> {
       return new Promise<Float32Array | 'idle'>((resolve, reject) => {
         if (opts.signal?.aborted) return reject(abortError('aborted'));
         if (ctx.state !== 'running') void ctx.resume();
-        const collector = createUtteranceCollector(CONFIG.vad, frameMs, Math.ceil(300 / frameMs));
+        const collector = createUtteranceCollector(
+          { ...CONFIG.vad, silenceMs: opts.silenceMs ?? CONFIG.vad.silenceMs },
+          frameMs,
+          Math.ceil(300 / frameMs),
+        );
+        const all: Float32Array[] = []; // everything heard in this listen, for the manual finish
+        const maxFrames = Math.ceil(CONFIG.vad.maxUtteranceMs / frameMs);
         let quietMs = 0;
         let started = false;
         let lastFrameAt = Date.now();
@@ -74,6 +84,7 @@ export async function openMic(): Promise<Mic> {
           fail = null;
           clearInterval(watchdog);
           opts.signal?.removeEventListener('abort', onAbort);
+          opts.finish?.removeEventListener('abort', onFinish);
         };
         const onFail = (e: DOMException) => {
           cleanup();
@@ -81,10 +92,26 @@ export async function openMic(): Promise<Mic> {
         };
         const onAbort = () => onFail(abortError('aborted'));
         opts.signal?.addEventListener('abort', onAbort);
+        const onFinish = () => {
+          const samples = all.reduce((n, f) => n + f.length, 0);
+          if (samples < ctx.sampleRate * 0.3) return onFail(abortError('nothing recorded'));
+          const out = new Float32Array(samples);
+          let off = 0;
+          for (const f of all) {
+            out.set(f, off);
+            off += f.length;
+          }
+          cleanup();
+          resolve(downsample(out, ctx.sampleRate, CONFIG.sampleRate));
+        };
+        if (opts.finish?.aborted) return onFinish();
+        opts.finish?.addEventListener('abort', onFinish);
         fail = onFail;
 
         handler = (frame) => {
           lastFrameAt = Date.now();
+          all.push(frame);
+          if (all.length > maxFrames) all.shift();
           const out = collector.push(frame);
           if (out) {
             cleanup();

@@ -60,3 +60,21 @@ test('reset clears state', () => {
   expect(feed(d, 0, 12)).not.toContain('speech-end');
   expect(d.push(0.1, 100)).toBe('speech-start');
 });
+
+describe('noise floor robustness', () => {
+  const o = { ...opts, calibrationFrames: 4, startFrames: 2, floorFactor: 2.5, maxThreshold: 0.06 };
+
+  test('talking during calibration still gets detected (threshold is capped)', () => {
+    const d = createSilenceDetector(o);
+    feed(d, 0.2, 4); // user already talking while we calibrate
+    expect(feed(d, 0.2, 5)).toContain('speech-start');
+    expect(feed(d, 0, 12)[11]).toBe('speech-end');
+  });
+
+  test('calibration uses the quietest frame, not the average', () => {
+    const d = createSilenceDetector({ ...o, maxThreshold: 1 });
+    // one loud blip (tap sound) among quiet frames must not raise the floor
+    for (const v of [0.01, 0.3, 0.01, 0.01]) d.push(v, 100);
+    expect(feed(d, 0.05, 5)).toContain('speech-start');
+  });
+});

@@ -11,15 +11,17 @@ export interface VadOpts {
   startFrames?: number;
   /** Voice must be this many times the measured noise floor (default 0 = off). */
   floorFactor?: number;
+  /** The threshold never goes above this, so normal speech is always heard (default: no cap). */
+  maxThreshold?: number;
 }
 
 export function createSilenceDetector(opts: VadOpts) {
   const calFrames = opts.calibrationFrames ?? 0;
   const startFrames = Math.max(1, opts.startFrames ?? 1);
   const factor = opts.floorFactor ?? 0;
+  const cap = opts.maxThreshold ?? Infinity;
 
   let calibrated = 0;
-  let calSum = 0;
   let floor = 0;
   let inSpeech = false;
   let loudRun = 0;
@@ -28,7 +30,7 @@ export function createSilenceDetector(opts: VadOpts) {
   let totalMs = 0; // total time since speech-start
   let silentMs = 0;
 
-  const threshold = () => Math.max(opts.rmsThreshold, floor * factor);
+  const threshold = () => Math.min(cap, Math.max(opts.rmsThreshold, floor * factor));
 
   const endUtterance = () => {
     inSpeech = false;
@@ -42,15 +44,14 @@ export function createSilenceDetector(opts: VadOpts) {
   const reset = () => {
     endUtterance();
     calibrated = 0;
-    calSum = 0;
     floor = 0;
   };
 
   const push = (level: number, frameMs: number): VadEvent => {
     if (calibrated < calFrames) {
+      // quietest calibration frame = background noise (a tap sound or early speech won't inflate it)
+      floor = calibrated === 0 ? level : Math.min(floor, level);
       calibrated++;
-      calSum += level;
-      floor = calSum / calibrated;
       return null;
     }
     const loud = level >= threshold();

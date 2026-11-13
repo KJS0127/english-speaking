@@ -8,7 +8,9 @@ export const CONFIG = {
     calibrationFrames: 4, // first frames of each listen measure the noise floor
     startFrames: 2, // consecutive loud frames needed to start (ignores ticks/bumps)
     floorFactor: 2.5, // voice must be this many times louder than the noise floor
+    maxThreshold: 0.06, // never require more than normal speaking volume
   },
+  homeSilenceMs: 2000, // home mode allows longer thinking pauses (there is also a manual button)
   idlePromptMs: 45000,
   // Free-tier models that accept audio input, tried in order (the first that works is remembered).
   // gemini-2.5-flash was deprecated in 2026; check the Gemini deprecations page before changing.

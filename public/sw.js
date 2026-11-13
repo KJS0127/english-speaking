@@ -1,5 +1,5 @@
 // App-shell cache. Only same-origin GET requests are cached; Gemini calls are never touched.
-const CACHE = 'speaking-v5';
+const CACHE = 'speaking-v6';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './manifest.webmanifest'])));

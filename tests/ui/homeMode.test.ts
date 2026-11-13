@@ -172,21 +172,40 @@ test('RateLimitError asks to wait and keeps mic enabled', async () => {
   expect(q<HTMLButtonElement>('button.mic').disabled).toBe(false);
 });
 
-test('tapping the mic button while listening cancels listening', async () => {
-  let closed = 0;
+test('tapping "다 말했어요" while listening sends what was said right away', async () => {
+  const seen: any[] = [];
   deps.mic = async () => ({
-    listen: ({ signal }: { signal?: AbortSignal } = {}) =>
-      new Promise((_r, rej) => signal?.addEventListener('abort', () => rej(new DOMException('a', 'AbortError')))),
-    close() { closed++; },
+    listen: (o: any = {}) => {
+      seen.push(o);
+      return new Promise((resolve) => o.finish?.addEventListener('abort', () => resolve(new Float32Array([0.1, 0.2]))));
+    },
+    close() {},
   });
   await renderHomeMode(root(), deps, scenario);
   q<HTMLButtonElement>('button.mic').click();
   await flush();
-  expect(q('button.mic').textContent).toBe('■ 그만 듣기');
+  expect(q('button.mic').textContent).toBe('■ 다 말했어요');
+  expect(seen[0].silenceMs).toBe(2000);
   q<HTMLButtonElement>('button.mic').click();
   await flush();
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(q('.chat').textContent).toContain('What size?');
   expect(q('button.mic').textContent).toBe('🎤 말하기');
+});
+
+test('"다 말했어요" with nothing recorded just stops listening quietly', async () => {
+  deps.mic = async () => ({
+    listen: (o: any = {}) =>
+      new Promise((_r, rej) => o.finish?.addEventListener('abort', () => rej(new DOMException('a', 'AbortError')))),
+    close() {},
+  });
+  await renderHomeMode(root(), deps, scenario);
+  q<HTMLButtonElement>('button.mic').click();
+  await flush();
+  q<HTMLButtonElement>('button.mic').click();
+  await flush();
   expect(send).not.toHaveBeenCalled();
+  expect(q('button.mic').textContent).toBe('🎤 말하기');
   expect(q('.status').textContent).toBe('');
 });
 

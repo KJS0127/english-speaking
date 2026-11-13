@@ -49,7 +49,8 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
   let busy = true; // until the mission is ready
   let blocked = false;
   let closed = false; // mission evaluated + session ended
-  let listenCtrl: AbortController | null = null;
+  let listenCtrl: AbortController | null = null; // cancels listening (leaving the page)
+  let finishCtrl: AbortController | null = null; // "다 말했어요": send what was said so far
   let idx = 0;
   const achieved: number[] = [];
   let userTurns = 0;
@@ -97,7 +98,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
     if (method !== 2) hintBtn.remove();
     else if (!hintBtn.isConnected) micBtn.before(hintBtn);
     hintBox.hidden = true;
-    micBtn.textContent = listenCtrl ? '■ 그만 듣기' : '🎤 말하기';
+    micBtn.textContent = listenCtrl ? '■ 다 말했어요' : '🎤 말하기';
     micBtn.disabled = listenCtrl ? false : busy || blocked || (method === 1 && !textArea.value.trim());
   };
 
@@ -169,7 +170,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
 
   const onMic = async () => {
     if (listenCtrl) {
-      listenCtrl.abort(); // second tap while listening = cancel
+      finishCtrl?.abort(); // second tap while listening = done talking, send now
       return;
     }
     const ms = mission;
@@ -178,11 +179,16 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
     deps.stopSpeaking?.();
     busy = true;
     listenCtrl = new AbortController();
+    finishCtrl = new AbortController();
     refresh();
-    setStatus('듣는 중… 말을 마치면 잠시 기다려 주세요.');
+    setStatus('듣는 중… 다 말하면 아래 버튼을 눌러 주세요.');
     try {
       mic ??= await deps.mic();
-      const audio = await mic.listen({ signal: listenCtrl.signal });
+      const audio = await mic.listen({
+        signal: listenCtrl.signal,
+        finish: finishCtrl.signal,
+        silenceMs: CONFIG.homeSilenceMs,
+      });
       listenCtrl = null;
       refresh();
       if (audio === 'idle') {
@@ -267,6 +273,7 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       }
     } finally {
       listenCtrl = null;
+      finishCtrl = null;
       busy = false;
       refresh();
     }
