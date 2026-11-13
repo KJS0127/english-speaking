@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { openDb, type Db } from '../../src/store/db';
 import { renderHomeMode, type HomeModeDeps } from '../../src/ui/homeMode';
 import { SCENARIOS } from '../../src/scenarios';
-import { AuthError, QuotaError, RateLimitError } from '../../src/ai/errors';
+import { AuthError, FatalApiError, QuotaError, RateLimitError } from '../../src/ai/errors';
 import type { TurnResult } from '../../src/ai/schema';
 
 let n = 0;
@@ -139,6 +139,14 @@ test('AuthError shows message with link to settings', async () => {
   await talk();
   expect(q('.status').textContent).toContain('API 키에 문제가 있어요');
   expect(q('.status a[href="#/settings"]')).not.toBeNull();
+});
+
+test('FatalApiError shows the API detail so the cause can be found', async () => {
+  send.mockRejectedValue(new FatalApiError('gemini-3.5-flash-lite (HTTP 400): Unknown name "foo"'));
+  await renderHomeMode(root(), deps, scenario);
+  await talk();
+  expect(q('.status').textContent).toContain('앱 설정에 문제가 있어요');
+  expect(q('.status').textContent).toContain('Unknown name "foo"');
 });
 
 test('RateLimitError asks to wait and keeps mic enabled', async () => {

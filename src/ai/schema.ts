@@ -19,28 +19,27 @@ export interface TurnResult {
   pronunciation: string | null; // Korean explanation
 }
 
-// Gemini responseSchema (OpenAPI subset)
+// Gemini responseJsonSchema (JSON Schema subset; nullable = type array with 'null')
 export const RESPONSE_SCHEMA = {
-  type: 'OBJECT',
+  type: 'object',
   properties: {
-    transcript: { type: 'STRING', description: "Exactly what the learner said (verbatim, may be empty)." },
-    command: { type: 'STRING', enum: [...COMMANDS] },
-    aiLine: { type: 'STRING', description: 'Your next line in the role-play, in English.' },
-    aiLineKo: { type: 'STRING', description: 'Korean meaning of aiLine.' },
-    suggestedReply: { type: 'STRING', description: 'An easy English reply the learner could say next.' },
+    transcript: { type: 'string', description: 'Exactly what the learner said (verbatim, may be empty).' },
+    command: { type: 'string', enum: [...COMMANDS] },
+    aiLine: { type: 'string', description: 'Your next line in the role-play, in English.' },
+    aiLineKo: { type: 'string', description: 'Korean meaning of aiLine.' },
+    suggestedReply: { type: 'string', description: 'An easy English reply the learner could say next.' },
     correction: {
-      type: 'OBJECT',
-      nullable: true,
+      type: ['object', 'null'],
       properties: {
-        original: { type: 'STRING' },
-        better: { type: 'STRING' },
-        why: { type: 'STRING', description: 'Short reason in Korean.' },
+        original: { type: 'string' },
+        better: { type: 'string' },
+        why: { type: 'string', description: 'Short reason in Korean.' },
       },
       required: ['original', 'better', 'why'],
     },
-    pronunciation: { type: 'STRING', nullable: true, description: 'Short pronunciation tip in Korean, or null.' },
+    pronunciation: { type: ['string', 'null'], description: 'Short pronunciation tip in Korean, or null.' },
   },
-  required: ['transcript', 'command', 'aiLine', 'aiLineKo', 'suggestedReply'],
+  required: ['transcript', 'command', 'aiLine', 'aiLineKo', 'suggestedReply', 'correction', 'pronunciation'],
 } as const;
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');

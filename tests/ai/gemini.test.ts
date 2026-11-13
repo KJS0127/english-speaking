@@ -1,4 +1,4 @@
-import { sendTurn } from '../../src/ai/gemini';
+import { sendTurn, resetModelChoice } from '../../src/ai/gemini';
 import { AuthError, QuotaError, NetworkError, BadResponseError, RateLimitError, FatalApiError } from '../../src/ai/errors';
 import { SCENARIOS } from '../../src/scenarios';
 import { CONFIG } from '../../src/config';
@@ -7,13 +7,13 @@ import type { TurnRequest } from '../../src/ai/prompt';
 const req: TurnRequest = { scenario: SCENARIOS[0], mode: 'car', level: 3, history: [], weakPhrases: [], audioWav: new Uint8Array([1]) };
 const ok = (obj: unknown) =>
   new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] }), { status: 200 });
-const status = (s: number, body = '{}') => vi.fn().mockResolvedValue(new Response(body, { status: s }));
+const status = (s: number, body = '{}') => vi.fn(async () => new Response(body, { status: s }));
 
 test('posts to model endpoint with x-goog-api-key header', async () => {
   const f = vi.fn().mockResolvedValue(ok({ transcript: 'a', aiLine: 'b' }));
   await sendTurn(req, 'KEY', f);
   const [url, init] = f.mock.calls[0];
-  expect(url).toBe(`https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.model}:generateContent`);
+  expect(url).toBe(`https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.models[0]}:generateContent`);
   expect(init.method).toBe('POST');
   expect(init.headers['x-goog-api-key']).toBe('KEY');
 });
@@ -74,10 +74,35 @@ test('aborting the caller signal rejects with NetworkError', async () => {
   await expect(p).rejects.toBeInstanceOf(NetworkError);
 });
 
-test('disables thinking to keep latency low', async () => {
+test('uses a current model and JSON schema field, no thinking config', async () => {
+  expect(CONFIG.models[0]).toBe('gemini-3.5-flash-lite');
   const f = vi.fn().mockResolvedValue(ok({ transcript: 'a', aiLine: 'b' }));
   await sendTurn(req, 'K', f);
-  expect(JSON.parse(f.mock.calls[0][1].body).generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  const gc = JSON.parse(f.mock.calls[0][1].body).generationConfig;
+  expect(gc.thinkingConfig).toBeUndefined();
+  expect(gc.responseSchema).toBeUndefined();
+  expect(gc.responseJsonSchema.type).toBe('object');
+});
+
+test('falls back to the next model when one is gone, and remembers it', async () => {
+  resetModelChoice();
+  const f = vi.fn((url: string) =>
+    Promise.resolve(url.includes(CONFIG.models[0]) ? new Response('{"error":{"message":"not found"}}', { status: 404 }) : ok({ transcript: 'a', aiLine: 'b' })),
+  );
+  const r = await sendTurn(req, 'K', f as unknown as typeof fetch);
+  expect(r.aiLine).toBe('b');
+  expect(f.mock.calls[1][0]).toContain(CONFIG.models[1]);
+  await sendTurn(req, 'K', f as unknown as typeof fetch);
+  expect(f.mock.calls[2][0]).toContain(CONFIG.models[1]);
+  resetModelChoice();
+});
+
+test('fatal error message includes the API message when all models fail', async () => {
+  resetModelChoice();
+  const err = await sendTurn(req, 'K', status(400, '{"error":{"status":"INVALID_ARGUMENT","message":"Unknown name responseJsonSchema"}}')).catch((e) => e);
+  expect(err).toBeInstanceOf(FatalApiError);
+  expect(err.message).toContain('Unknown name responseJsonSchema');
+  resetModelChoice();
 });
 
 test('maps 5xx to NetworkError (retryable)', async () => {

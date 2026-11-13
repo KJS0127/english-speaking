@@ -181,7 +181,10 @@ export async function renderHomeMode(root: HTMLElement, deps: HomeModeDeps, scen
       } else if (e instanceof RateLimitError) {
         setStatus(h('span', { className: 'error' }, '요청이 많아요. 잠시 후에 다시 눌러 주세요.'));
       } else if (e instanceof FatalApiError) {
-        setStatus(h('span', { className: 'error' }, '앱 설정에 문제가 있어요. AI 모델 설정을 확인해 주세요.'));
+        setStatus(
+          h('span', { className: 'error' }, '앱 설정에 문제가 있어요. AI 모델 설정을 확인해 주세요.',
+            h('small', { className: 'detail' }, ` (${e.message})`)),
+        );
       } else if (e instanceof AuthError) {
         setStatus(h('span', { className: 'error' }, 'API 키에 문제가 있어요. ', h('a', { href: routeToHash({ name: 'settings' }) }, '설정에서 확인하기')));
       } else if (e instanceof QuotaError) {

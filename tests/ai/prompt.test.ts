@@ -35,7 +35,7 @@ test('buildBody sends audio inline as wav and json schema', () => {
   expect(last.role).toBe('user');
   expect(last.parts[last.parts.length - 1]).toEqual({ inlineData: { mimeType: 'audio/wav', data: 'AQID' } });
   expect(body.generationConfig.responseMimeType).toBe('application/json');
-  expect(body.generationConfig.responseSchema).toBe(RESPONSE_SCHEMA);
+  expect(body.generationConfig.responseJsonSchema).toBe(RESPONSE_SCHEMA);
   expect(body.systemInstruction.parts[0].text).toBe(buildSystemPrompt(base));
 });
 

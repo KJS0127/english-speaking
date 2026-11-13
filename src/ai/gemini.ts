@@ -21,16 +21,54 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
   return ctrl.signal;
 }
 
+/** Index into CONFIG.models of the model that last worked. */
+let modelIdx = 0;
+export function resetModelChoice(): void {
+  modelIdx = 0;
+}
+
+/** Tries each configured model in turn when one is gone or rejects the request shape. */
 export async function sendTurn(
   req: TurnRequest,
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<TurnResult> {
+  let lastFatal: FatalApiError | null = null;
+  for (let i = modelIdx; i < CONFIG.models.length; i++) {
+    try {
+      const r = await sendWithModel(CONFIG.models[i], req, apiKey, fetchImpl, signal);
+      modelIdx = i;
+      return r;
+    } catch (e) {
+      if (!(e instanceof FatalApiError)) throw e;
+      lastFatal = e;
+    }
+  }
+  throw lastFatal ?? new FatalApiError('no model available');
+}
+
+function apiMessage(text: string): string {
+  try {
+    const m = JSON.parse(text)?.error?.message;
+    if (typeof m === 'string') return m;
+  } catch {
+    /* not JSON */
+  }
+  return text.slice(0, 200);
+}
+
+async function sendWithModel(
+  model: string,
+  req: TurnRequest,
+  apiKey: string,
+  fetchImpl: typeof fetch,
+  signal?: AbortSignal,
+): Promise<TurnResult> {
   const combined = withTimeout(signal, CONFIG.requestTimeoutMs);
   let res: Response;
   try {
-    res = await fetchImpl(`${ENDPOINT}/${CONFIG.model}:generateContent`, {
+    res = await fetchImpl(`${ENDPOINT}/${model}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify(buildBody(req)),
@@ -49,7 +87,9 @@ export async function sendTurn(
       throw new RateLimitError(text, retryDelayMs(text));
     }
     if (res.status >= 500) throw new NetworkError(`HTTP ${res.status}`);
-    if (res.status === 404 || /INVALID_ARGUMENT|FAILED_PRECONDITION/.test(text)) throw new FatalApiError(`HTTP ${res.status}: ${text}`);
+    if (res.status === 404 || /INVALID_ARGUMENT|FAILED_PRECONDITION/.test(text)) {
+      throw new FatalApiError(`${model} (HTTP ${res.status}): ${apiMessage(text)}`);
+    }
     throw new BadResponseError(`HTTP ${res.status}: ${text}`);
   }
 

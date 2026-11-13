@@ -76,10 +76,6 @@ export function buildBody(req: TurnRequest): object {
   return {
     systemInstruction: { parts: [{ text: buildSystemPrompt(req) }] },
     contents,
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: RESPONSE_SCHEMA,
-      thinkingConfig: { thinkingBudget: 0 }, // lower latency for live conversation
-    },
+    generationConfig: { responseMimeType: 'application/json', responseJsonSchema: RESPONSE_SCHEMA },
   };
 }
