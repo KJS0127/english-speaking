@@ -1,4 +1,5 @@
 import type { Scenario } from '../scenarios';
+import { DIFFICULTY_DESC, type Mission } from '../missions';
 import { RESPONSE_SCHEMA } from './schema';
 
 export interface HistoryItem {
@@ -14,6 +15,8 @@ export interface TurnRequest {
   weakPhrases: { original: string; better: string }[];
   audioWav: Uint8Array;
   typedText?: string;
+  mission?: Mission;
+  achieved?: number[]; // 1-based goal numbers already achieved
 }
 
 const LEVEL_DESC: Record<1 | 2 | 3, string> = {
@@ -41,10 +44,26 @@ export function buildSystemPrompt(req: TurnRequest): string {
     '  slower = "천천히", "slower", "slowly please"',
     '  korean = "한국어로", "in Korean", "무슨 뜻이야"',
     '  hint = "힌트", "hint", "help me"',
-    '  next = "다음", "다음 상황", "next"',
+    '  next = "다음", "다음 목표", "next" (give up this mission, start a new one)',
+    '  otherScenario = "다른 상황", "different situation"',
+    '  goal = "목표", "goal", "what\'s my goal"',
     '  stop = "그만", "끝", "stop"',
     '  Otherwise "none". When command is not "none", still fill aiLine with a short acknowledgement.',
   ];
+  if (req.mission) {
+    const done = new Set(req.achieved ?? []);
+    lines.push(
+      '',
+      `Difficulty ${req.mission.difficulty} of 5: ${DIFFICULTY_DESC[req.mission.difficulty] ?? ''}`,
+      `This conversation's situation: ${req.mission.situationEn}`,
+      'The learner has these goals (numbered):',
+      ...req.mission.goals.map((g, i) => `${i + 1}. [${done.has(i + 1) ? 'done' : 'todo'}] ${g}`),
+      '- goalsDone: list the numbers of [todo] goals the learner clearly achieved in THIS turn (else []).',
+      '- Steer the conversation naturally toward the remaining goals, staying in role. If the learner drifts, bring them back.',
+      '- Never say the learner\'s line for them in aiLine. suggestedReply should help with a remaining goal.',
+      '- When the last remaining goal is achieved in this turn, wrap up the conversation politely in aiLine.',
+    );
+  }
   if (req.mode === 'car') {
     lines.push('', 'The learner is driving. aiLine must be at most 2 short sentences. Be calm and never rush the learner.');
   }

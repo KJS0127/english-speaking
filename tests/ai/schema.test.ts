@@ -9,6 +9,7 @@ const full = {
   suggestedReply: 'A large one, please.',
   correction: { original: 'I want coffee', better: "I'd like a coffee, please.", why: '더 공손해요' },
   pronunciation: 'coffee의 f 발음이 p처럼 들려요',
+  goalsDone: [1],
 };
 
 test('parseTurnResult accepts full object', () => {
@@ -18,8 +19,18 @@ test('parseTurnResult accepts full object', () => {
 test('parseTurnResult fills defaults', () => {
   expect(parseTurnResult({ transcript: 'hi', aiLine: 'Hello' })).toEqual({
     transcript: 'hi', command: 'none', aiLine: 'Hello', aiLineKo: '', suggestedReply: '',
-    correction: null, pronunciation: null,
+    correction: null, pronunciation: null, goalsDone: [],
   });
+});
+
+test('parseTurnResult filters goalsDone to positive integers without duplicates', () => {
+  expect(parseTurnResult({ ...full, goalsDone: [2, 2, '1', 0, -1, 1.5, 3] }).goalsDone).toEqual([2, 3]);
+  expect(parseTurnResult({ ...full, goalsDone: 'x' }).goalsDone).toEqual([]);
+});
+
+test('parses goal and otherScenario commands', () => {
+  expect(parseTurnResult({ ...full, command: 'goal' }).command).toBe('goal');
+  expect(parseTurnResult({ ...full, command: 'otherScenario' }).command).toBe('otherScenario');
 });
 
 test('parseTurnResult rejects missing aiLine', () => {
@@ -46,6 +57,6 @@ test('missing transcript becomes empty string', () => {
 test('schema lists all fields as properties', () => {
   const props = Object.keys((RESPONSE_SCHEMA as { properties: object }).properties);
   expect(props.sort()).toEqual(
-    ['aiLine', 'aiLineKo', 'command', 'correction', 'pronunciation', 'suggestedReply', 'transcript'].sort(),
+    ['aiLine', 'aiLineKo', 'command', 'correction', 'goalsDone', 'pronunciation', 'suggestedReply', 'transcript'].sort(),
   );
 });

@@ -12,7 +12,7 @@ const flush = async () => {
 const scenario = SCENARIOS[0];
 const res = (over: Partial<TurnResult> = {}): TurnResult => ({
   transcript: 'I want coffee', command: 'none', aiLine: 'What size?', aiLineKo: '어떤 사이즈요?',
-  suggestedReply: 'A small one, please.', correction: null, pronunciation: null, ...over,
+  suggestedReply: 'A small one, please.', correction: null, pronunciation: null, goalsDone: [], ...over,
 });
 
 let db: Db;

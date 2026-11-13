@@ -1,7 +1,7 @@
 import { BadResponseError } from './errors';
 
-export type Command = 'none' | 'repeat' | 'slower' | 'korean' | 'hint' | 'next' | 'stop';
-export const COMMANDS: readonly Command[] = ['none', 'repeat', 'slower', 'korean', 'hint', 'next', 'stop'];
+export type Command = 'none' | 'repeat' | 'slower' | 'korean' | 'hint' | 'next' | 'stop' | 'goal' | 'otherScenario';
+export const COMMANDS: readonly Command[] = ['none', 'repeat', 'slower', 'korean', 'hint', 'next', 'stop', 'goal', 'otherScenario'];
 
 export interface Correction {
   original: string;
@@ -17,6 +17,7 @@ export interface TurnResult {
   suggestedReply: string;
   correction: Correction | null;
   pronunciation: string | null; // Korean explanation
+  goalsDone: number[]; // 1-based goal numbers newly achieved this turn
 }
 
 // Gemini responseJsonSchema (JSON Schema subset; nullable = type array with 'null')
@@ -38,8 +39,9 @@ export const RESPONSE_SCHEMA = {
       required: ['original', 'better', 'why'],
     },
     pronunciation: { type: ['string', 'null'], description: 'Short pronunciation tip in Korean, or null.' },
+    goalsDone: { type: 'array', items: { type: 'integer' }, description: 'Goal numbers newly achieved in this turn.' },
   },
-  required: ['transcript', 'command', 'aiLine', 'aiLineKo', 'suggestedReply', 'correction', 'pronunciation'],
+  required: ['transcript', 'command', 'aiLine', 'aiLineKo', 'suggestedReply', 'correction', 'pronunciation', 'goalsDone'],
 } as const;
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -62,5 +64,8 @@ export function parseTurnResult(raw: unknown): TurnResult {
     suggestedReply: str(r.suggestedReply),
     correction,
     pronunciation: typeof r.pronunciation === 'string' && r.pronunciation.trim() ? r.pronunciation : null,
+    goalsDone: Array.isArray(r.goalsDone)
+      ? [...new Set(r.goalsDone.filter((n): n is number => Number.isInteger(n) && (n as number) > 0))]
+      : [],
   };
 }

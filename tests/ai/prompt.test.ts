@@ -57,3 +57,27 @@ test('base64 handles large audio without stack overflow', () => {
   const data: string = body.contents[body.contents.length - 1].parts.at(-1).inlineData.data;
   expect(data.length).toBe(Math.ceil(500_000 / 3) * 4);
 });
+
+const mission = {
+  titleKo: '라테 주문', goals: ['큰 사이즈 라테 주문하기', '영수증 요청하기'], situationEn: 'The card reader is broken.',
+  openingLine: 'Hi!', difficulty: 4, source: 'ai' as const,
+};
+
+test('system prompt lists numbered goals and marks achieved ones', () => {
+  const p = buildSystemPrompt({ ...base, mission, achieved: [1] });
+  expect(p).toContain('The card reader is broken.');
+  expect(p).toContain('1. [done] 큰 사이즈 라테 주문하기');
+  expect(p).toContain('2. [todo] 영수증 요청하기');
+  expect(p).toContain('goalsDone');
+  expect(p).toMatch(/never say the learner's line/i);
+});
+
+test('system prompt includes the difficulty description', () => {
+  const p = buildSystemPrompt({ ...base, mission, achieved: [] });
+  expect(p).toContain('Difficulty 4 of 5');
+});
+
+test('command detection covers goal and other-scenario commands', () => {
+  const p = buildSystemPrompt({ ...base, mission, achieved: [] });
+  for (const w of ['목표', 'goal', '다른 상황', 'otherScenario']) expect(p).toContain(w);
+});

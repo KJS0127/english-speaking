@@ -9,7 +9,7 @@ import type { TurnRequest } from '../../src/ai/prompt';
 const scenario = SCENARIOS.find((s) => s.category === 'travel')!;
 const res = (over: Partial<TurnResult> = {}): TurnResult => ({
   transcript: 'I have a reservation', command: 'none', aiLine: 'Great, your name please?', aiLineKo: '좋아요, 성함이요?',
-  suggestedReply: 'My name is Kim.', correction: null, pronunciation: null, ...over,
+  suggestedReply: 'My name is Kim.', correction: null, pronunciation: null, goalsDone: [], ...over,
 });
 
 type Step = TurnResult | Error;

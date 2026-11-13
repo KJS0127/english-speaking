@@ -27,17 +27,29 @@ export function resetModelChoice(): void {
   modelIdx = 0;
 }
 
-/** Tries each configured model in turn when one is gone or rejects the request shape. */
 export async function sendTurn(
   req: TurnRequest,
   apiKey: string,
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<TurnResult> {
+  return parseTurnResult(await callGemini(buildBody(req), apiKey, fetchImpl, signal));
+}
+
+/**
+ * Sends a generateContent body and returns the parsed JSON from the reply text.
+ * Tries each configured model in turn when one is gone or rejects the request shape.
+ */
+export async function callGemini(
+  body: object,
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
+): Promise<unknown> {
   let lastFatal: FatalApiError | null = null;
   for (let i = modelIdx; i < CONFIG.models.length; i++) {
     try {
-      const r = await sendWithModel(CONFIG.models[i], req, apiKey, fetchImpl, signal);
+      const r = await callModel(CONFIG.models[i], body, apiKey, fetchImpl, signal);
       modelIdx = i;
       return r;
     } catch (e) {
@@ -58,20 +70,20 @@ function apiMessage(text: string): string {
   return text.slice(0, 200);
 }
 
-async function sendWithModel(
+async function callModel(
   model: string,
-  req: TurnRequest,
+  body: object,
   apiKey: string,
   fetchImpl: typeof fetch,
   signal?: AbortSignal,
-): Promise<TurnResult> {
+): Promise<unknown> {
   const combined = withTimeout(signal, CONFIG.requestTimeoutMs);
   let res: Response;
   try {
     res = await fetchImpl(`${ENDPOINT}/${model}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(buildBody(req)),
+      body: JSON.stringify(body),
       signal: combined,
     });
   } catch (e) {
@@ -101,11 +113,9 @@ async function sendWithModel(
   }
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (typeof text !== 'string') throw new BadResponseError('no candidate text');
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     throw new BadResponseError('candidate text is not JSON');
   }
-  return parseTurnResult(parsed);
 }
